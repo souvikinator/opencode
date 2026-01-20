@@ -31,6 +31,8 @@ import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
+import { pathToFileURL } from "url"
+import path from "path"
 
 export type PromptProps = {
   sessionID?: string
@@ -50,7 +52,8 @@ export type PromptRef = {
   blur(): void
   focus(): void
   submit(): void
-  addFilePart(file: string, startLine: number, endLine: number): void
+  addFilePart(file: string, startLine: number, endLine: number, options?: { absolutePath?: string }): void
+  append(text: string): void
 }
 
 const PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
@@ -347,9 +350,10 @@ export function Prompt(props: PromptProps) {
     submit() {
       submit()
     },
-    addFilePart(file: string, startLine: number, endLine: number) {
+    addFilePart(file: string, startLine: number, endLine: number, options?: { absolutePath?: string }) {
       // Build URL with line range
-      const url = new URL(`file://${process.cwd()}/${file}`)
+      const pathStr = options?.absolutePath ?? path.resolve(process.cwd(), file)
+      const url = pathToFileURL(pathStr)
       url.searchParams.set("start", String(startLine))
       url.searchParams.set("end", String(endLine))
 
@@ -359,7 +363,16 @@ export function Prompt(props: PromptProps) {
       // Insert the virtual text at current cursor position
       const cursorPos = input.cursorOffset
       const currentText = store.prompt.input
-      const newText = currentText.slice(0, cursorPos) + displayText + " " + currentText.slice(cursorPos)
+
+      // Determine if we need a leading space
+      // If we're appending (cursor at end) and there's text before us that isn't a space, add one.
+      // If we're inserting in middle, logic might be more complex, but standard use case is appending.
+      let prefix = ""
+      if (cursorPos > 0 && currentText[cursorPos - 1] !== " ") {
+        prefix = " "
+      }
+
+      const newText = currentText.slice(0, cursorPos) + prefix + displayText + " " + currentText.slice(cursorPos)
 
       input.setText(newText)
 
@@ -372,8 +385,8 @@ export function Prompt(props: PromptProps) {
         source: {
           type: "file",
           text: {
-            start: cursorPos,
-            end: cursorPos + displayText.length,
+            start: cursorPos + prefix.length,
+            end: cursorPos + prefix.length + displayText.length,
             value: displayText,
           },
           path: file,
@@ -382,8 +395,8 @@ export function Prompt(props: PromptProps) {
 
       // Create extmark for the virtual text
       const extmarkId = input.extmarks.create({
-        start: cursorPos,
-        end: cursorPos + displayText.length,
+        start: cursorPos + prefix.length,
+        end: cursorPos + prefix.length + displayText.length,
         virtual: true,
         styleId: fileStyleId,
         typeId: promptPartTypeId,
@@ -400,8 +413,12 @@ export function Prompt(props: PromptProps) {
       )
 
       // Move cursor after the inserted text
-      input.cursorOffset = cursorPos + displayText.length + 1
+      input.cursorOffset = cursorPos + prefix.length + displayText.length + 1
       input.focus()
+    },
+    append(text: string) {
+      input.insertText(text)
+      setStore("prompt", "input", input.plainText)
     },
   }
 

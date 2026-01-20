@@ -226,7 +226,10 @@ export function Session() {
   // Handler for adding code context from sidebar
   function handleAddContext(ref: CodeReference) {
     if (prompt) {
-      prompt.addFilePart(ref.file, ref.startLine, ref.endLine)
+      prompt.addFilePart(ref.file, ref.startLine, ref.endLine, { absolutePath: ref.absolutePath })
+      if (ref.comment) {
+        prompt.append(" " + ref.comment)
+      }
       setFocusPane("chat")
     }
   }
