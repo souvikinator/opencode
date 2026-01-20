@@ -11,7 +11,7 @@ import { useKeybind } from "../../context/keybind"
 import { useDirectory } from "../../context/directory"
 import { useKV } from "../../context/kv"
 import { TodoItem } from "../../component/todo-item"
-import { SidebarCode } from "./sidebar-code"
+import { SidebarCode, type CodeReference } from "./sidebar-code"
 
 export function Sidebar(props: {
   sessionID: string
@@ -20,6 +20,7 @@ export function Sidebar(props: {
   mode?: "info" | "code"
   focused?: Accessor<boolean>
   onFocus?: () => void
+  onAddContext?: (ref: CodeReference) => void
 }) {
   const mode = createMemo(() => props.mode ?? "info")
   const sync = useSync()
@@ -90,7 +91,12 @@ export function Sidebar(props: {
       >
         <Switch>
           <Match when={mode() === "code"}>
-            <SidebarCode sessionID={props.sessionID} focused={props.focused} onFocus={props.onFocus} />
+            <SidebarCode
+              sessionID={props.sessionID}
+              focused={props.focused}
+              onFocus={props.onFocus}
+              onAddContext={props.onAddContext}
+            />
           </Match>
           <Match when={mode() === "info"}>
             <scrollbox flexGrow={1}>

@@ -50,6 +50,7 @@ export type PromptRef = {
   blur(): void
   focus(): void
   submit(): void
+  addFilePart(file: string, startLine: number, endLine: number): void
 }
 
 const PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
@@ -345,6 +346,62 @@ export function Prompt(props: PromptProps) {
     },
     submit() {
       submit()
+    },
+    addFilePart(file: string, startLine: number, endLine: number) {
+      // Build URL with line range
+      const url = new URL(`file://${process.cwd()}/${file}`)
+      url.searchParams.set("start", String(startLine))
+      url.searchParams.set("end", String(endLine))
+
+      // Build display text (virtual text shown in input)
+      const displayText = `@${file}#${startLine}-${endLine}`
+
+      // Insert the virtual text at current cursor position
+      const cursorPos = input.cursorOffset
+      const currentText = store.prompt.input
+      const newText = currentText.slice(0, cursorPos) + displayText + " " + currentText.slice(cursorPos)
+
+      input.setText(newText)
+
+      // Create the file part
+      const part: PromptInfo["parts"][number] = {
+        type: "file",
+        mime: "text/plain",
+        filename: `${file}#${startLine}-${endLine}`,
+        url: url.toString(),
+        source: {
+          type: "file",
+          text: {
+            start: cursorPos,
+            end: cursorPos + displayText.length,
+            value: displayText,
+          },
+          path: file,
+        },
+      }
+
+      // Create extmark for the virtual text
+      const extmarkId = input.extmarks.create({
+        start: cursorPos,
+        end: cursorPos + displayText.length,
+        virtual: true,
+        styleId: fileStyleId,
+        typeId: promptPartTypeId,
+      })
+
+      // Update store
+      setStore(
+        produce((draft) => {
+          draft.prompt.input = newText
+          const partIndex = draft.prompt.parts.length
+          draft.prompt.parts.push(part)
+          draft.extmarkToPartIndex.set(extmarkId, partIndex)
+        }),
+      )
+
+      // Move cursor after the inserted text
+      input.cursorOffset = cursorPos + displayText.length + 1
+      input.focus()
     },
   }
 

@@ -58,6 +58,7 @@ import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
+import type { CodeReference } from "./sidebar-code"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
@@ -221,6 +222,14 @@ export function Session() {
 
   // Focus state: "chat" or "sidebar"
   const [focusPane, setFocusPane] = createSignal<"chat" | "sidebar">("chat")
+
+  // Handler for adding code context from sidebar
+  function handleAddContext(ref: CodeReference) {
+    if (prompt) {
+      prompt.addFilePart(ref.file, ref.startLine, ref.endLine)
+      setFocusPane("chat")
+    }
+  }
 
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
@@ -1157,6 +1166,7 @@ export function Session() {
                 mode={sidebarMode()}
                 focused={() => focusPane() === "sidebar"}
                 onFocus={() => setFocusPane("sidebar")}
+                onAddContext={handleAddContext}
               />
             </Match>
             <Match when={!wide()}>
