@@ -947,6 +947,26 @@ export type KeybindsConfig = {
    */
   sidebar_toggle?: string
   /**
+   * Toggle sidebar mode (info/code)
+   */
+  sidebar_mode_toggle?: string
+  /**
+   * Navigate up in sidebar file list
+   */
+  sidebar_up?: string
+  /**
+   * Navigate down in sidebar file list
+   */
+  sidebar_down?: string
+  /**
+   * Toggle between diff and code view in sidebar
+   */
+  sidebar_view_toggle?: string
+  /**
+   * Toggle focus between chat and sidebar
+   */
+  sidebar_focus?: string
+  /**
    * Toggle session scrollbar
    */
   scrollbar_toggle?: string

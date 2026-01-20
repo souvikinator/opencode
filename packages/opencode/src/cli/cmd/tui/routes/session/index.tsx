@@ -139,6 +139,7 @@ export function Session() {
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const [sidebarMode, setSidebarMode] = kv.signal<"info" | "code">("sidebar_mode", "info")
   const [conceal, setConceal] = createSignal(true)
   const [showThinking, setShowThinking] = kv.signal("thinking_visibility", true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
@@ -156,7 +157,8 @@ export function Session() {
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  const sidebarWidth = createMemo(() => (sidebarMode() === "code" ? 85 : 42))
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? sidebarWidth() : 0) - 4)
 
   const scrollAcceleration = createMemo(() => {
     const tui = sync.data.config.tui
@@ -217,9 +219,18 @@ export function Session() {
   let prompt: PromptRef
   const keybind = useKeybind()
 
+  // Focus state: "chat" or "sidebar"
+  const [focusPane, setFocusPane] = createSignal<"chat" | "sidebar">("chat")
+
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
   useKeyboard((evt) => {
+    if (keybind.match("sidebar_focus", evt)) {
+      if (!sidebarVisible()) return
+      setFocusPane((prev) => (prev === "chat" ? "sidebar" : "chat"))
+      return
+    }
+
     if (!session()?.parentID) return
     if (keybind.match("app_exit", evt)) {
       exit()
@@ -486,6 +497,31 @@ export function Session() {
           sessionID: route.sessionID,
           messageID: message.id,
         })
+      },
+    },
+    {
+      title: sidebarVisible() && sidebarMode() === "code" ? "Hide code editor" : "Show code editor",
+      value: "session.sidebar.mode.toggle",
+      keybind: "sidebar_mode_toggle",
+      category: "Session",
+      onSelect: (dialog) => {
+        // If sidebar is visible and in code mode, close it
+        if (sidebarVisible() && sidebarMode() === "code") {
+          batch(() => {
+            setSidebar(() => "hide")
+            setSidebarOpen(false)
+            setFocusPane("chat")
+          })
+        } else {
+          // Otherwise open/switch to code mode
+          setSidebarMode(() => "code")
+          batch(() => {
+            setSidebar(() => "auto")
+            setSidebarOpen(true)
+            setFocusPane("sidebar")
+          })
+        }
+        dialog.clear()
       },
     },
     {
@@ -958,7 +994,15 @@ export function Session() {
       }}
     >
       <box flexDirection="row">
-        <box flexGrow={1} paddingBottom={1} paddingTop={1} paddingLeft={2} paddingRight={2} gap={1}>
+        <box
+          flexGrow={1}
+          paddingBottom={1}
+          paddingTop={1}
+          paddingLeft={2}
+          paddingRight={2}
+          gap={1}
+          onMouseUp={() => setFocusPane("chat")}
+        >
           <Show when={session()}>
             <Show when={!sidebarVisible() || !wide()}>
               <Header />
@@ -1094,7 +1138,7 @@ export function Session() {
                     r.set(route.initialPrompt)
                   }
                 }}
-                disabled={permissions().length > 0 || questions().length > 0}
+                disabled={permissions().length > 0 || questions().length > 0 || focusPane() === "sidebar"}
                 onSubmit={() => {
                   toBottom()
                 }}
@@ -1107,7 +1151,13 @@ export function Session() {
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
-              <Sidebar sessionID={route.sessionID} />
+              <Sidebar
+                sessionID={route.sessionID}
+                width={sidebarWidth()}
+                mode={sidebarMode()}
+                focused={() => focusPane() === "sidebar"}
+                onFocus={() => setFocusPane("sidebar")}
+              />
             </Match>
             <Match when={!wide()}>
               <box
@@ -1119,7 +1169,13 @@ export function Session() {
                 alignItems="flex-end"
                 backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
               >
-                <Sidebar sessionID={route.sessionID} />
+                <Sidebar
+                  sessionID={route.sessionID}
+                  width={sidebarWidth()}
+                  mode={sidebarMode()}
+                  focused={() => focusPane() === "sidebar"}
+                  onFocus={() => setFocusPane("sidebar")}
+                />
               </box>
             </Match>
           </Switch>
