@@ -532,7 +532,7 @@ export function SidebarCode(props: {
     }
 
     // 'e' - Toggle file list expansion
-    if (evt.name === "e" && !visualMode() && selectedLineStart() === null && diffs().length > 0) {
+    if (evt.name === "e" && !evt.ctrl && !visualMode() && selectedLineStart() === null && diffs().length > 0) {
       setFileListExpanded((v) => !v)
       setFileListIndex(diffs().findIndex((d) => d.file === selectedFile()?.file) || 0)
       return
@@ -552,19 +552,19 @@ export function SidebarCode(props: {
     }
 
     // 'd' - Toggle diff view
-    if (evt.name === "d" && !visualMode() && selectedLineStart() === null) {
+    if (evt.name === "d" && !evt.ctrl && !visualMode() && selectedLineStart() === null) {
       setShowDiff((prev) => !prev)
       return
     }
 
     // 'f' - Open file explorer (alternative)
-    if (evt.name === "f" && !visualMode() && selectedLineStart() === null) {
+    if (evt.name === "f" && !evt.ctrl && !visualMode() && selectedLineStart() === null) {
       openFileExplorer()
       return
     }
 
     // Toggle Visual Mode
-    if (evt.name === "v") {
+    if (evt.name === "v" && !evt.ctrl) {
       setVisualMode((prev) => !prev)
       if (!visualMode()) {
         // Turning ON (prev was false)
@@ -578,7 +578,7 @@ export function SidebarCode(props: {
     }
 
     // Toggle Track Changes mode with 't'
-    if (evt.name === "t") {
+    if (evt.name === "t" && !evt.ctrl) {
       setTrackChanges((prev) => !prev)
       return
     }
