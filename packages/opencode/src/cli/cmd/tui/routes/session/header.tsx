@@ -115,6 +115,9 @@ export function Header() {
               </box>
               <box flexGrow={1} flexShrink={1} />
               <box flexDirection="row" gap={1} flexShrink={0}>
+                <text fg={theme.textMuted}>
+                  Editor <span style={{ fg: theme.text }}>{keybind.print("sidebar_focus")}</span>
+                </text>
                 <ContextInfo context={context} cost={cost} />
                 <text fg={theme.textMuted}>v{Installation.VERSION}</text>
               </box>
@@ -124,6 +127,9 @@ export function Header() {
             <box flexDirection="row" justifyContent="space-between" gap={1}>
               <Title session={session} />
               <box flexDirection="row" gap={1} flexShrink={0}>
+                <text fg={theme.textMuted}>
+                  Editor <span style={{ fg: theme.text }}>{keybind.print("sidebar_focus")}</span>
+                </text>
                 <ContextInfo context={context} cost={cost} />
                 <text fg={theme.textMuted}>v{Installation.VERSION}</text>
               </box>

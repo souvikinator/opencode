@@ -113,8 +113,12 @@ export function SidebarCode(props: {
 
   let previewScroll: ScrollBoxRenderable | undefined
   const diffs = createMemo(() => sync.data.session_diff[props.sessionID] ?? [])
+  const activeEdits = createMemo(() => sync.data.active_edits[props.sessionID] ?? [])
+  const lastEdit = createMemo(() => sync.data.last_edit[props.sessionID])
   const [selectedIndex, setSelectedIndex] = createSignal(0)
   const [trackHeight, setTrackHeight] = createSignal(20)
+
+  const [trackChanges, setTrackChanges] = createSignal(true)
 
   // Line selection state for adding context
   const [selectedLineStart, setSelectedLineStart] = createSignal<number | null>(null)
@@ -152,6 +156,32 @@ export function SidebarCode(props: {
       }
     }),
   )
+
+  createEffect(() => {
+    const edit = lastEdit()
+    if (!trackChanges() || !edit) return
+
+    const list = diffs()
+    const fileIndex = list.findIndex((d) => d.file === edit.file)
+    if (fileIndex >= 0 && fileIndex !== selectedIndex()) {
+      setSelectedIndex(fileIndex)
+    }
+  })
+
+  createEffect(() => {
+    const edit = lastEdit()
+    if (!trackChanges() || !edit?.line || !previewScroll) return
+
+    const file = selectedFile()
+    if (!file || file.file !== edit.file) return
+
+    const mapping = lineMapping()
+    const displayLine = mapping.find((m) => m.fileLine === edit.line && m.type === "add")
+    if (displayLine) {
+      previewScroll.scrollTo(Math.max(0, displayLine.displayLine - 5))
+      setCursorLine(displayLine.displayLine)
+    }
+  })
 
   // Get the line mapping for current file
   const unifiedContent = createMemo(() => {
@@ -278,6 +308,12 @@ export function SidebarCode(props: {
       return
     }
 
+    // Toggle Track Changes mode with 't'
+    if (evt.name === "t") {
+      setTrackChanges((prev) => !prev)
+      return
+    }
+
     // File navigation (when NOT in visual mode and NOT holding shift)
     if (!visualMode() && !evt.shift && selectedLineStart() === null) {
       if (keybind.match("sidebar_up", evt)) {
@@ -390,10 +426,13 @@ export function SidebarCode(props: {
     return grouped
   })
 
-  // Check if a line is in the selection range
   const isLineSelected = (line: number) => {
     const start = selectedLineStart()
     if (start === null) return false
+
+    const info = lineInfoMap().get(line)
+    if (info?.fileLine === -1) return false
+
     const end = selectedLineEnd() ?? start
     const minLine = Math.min(start, end)
     const maxLine = Math.max(start, end)
@@ -435,6 +474,10 @@ export function SidebarCode(props: {
               <span style={{ fg: theme.accent }}> [focused]</span>
             </Show>
           </text>
+          <box flexGrow={1} />
+          <box paddingRight={1}>
+            <text fg={trackChanges() ? theme.success : theme.textMuted}>{trackChanges() ? "● Track" : "○ Track"}</text>
+          </box>
         </box>
         <scrollbox flexGrow={1}>
           <Show
@@ -448,24 +491,66 @@ export function SidebarCode(props: {
             <For each={diffs()}>
               {(item, index) => {
                 const selected = createMemo(() => index() === selectedIndex())
+                const isActiveEdit = createMemo(() => {
+                  const active = activeEdits()
+                  const worktree = sync.data.path.worktree
+                  return active.some((activePath) => {
+                    const relativeActivePath =
+                      worktree && activePath.startsWith(worktree)
+                        ? activePath.slice(worktree.length).replace(/^\//, "")
+                        : activePath
+                    return (
+                      relativeActivePath === item.file ||
+                      activePath.endsWith("/" + item.file) ||
+                      item.file === activePath
+                    )
+                  })
+                })
+
+                const bgColor = createMemo(() => {
+                  if (isActiveEdit()) return theme.warning
+                  if (selected()) return theme.accent
+                  return undefined
+                })
+
+                const textColor = createMemo(() => {
+                  if (isActiveEdit()) return theme.background
+                  if (selected()) return theme.background
+                  return theme.text
+                })
+
+                const borderColor = createMemo(() => {
+                  if (selected() && isActiveEdit()) return theme.accent
+                  return undefined
+                })
+
                 return (
                   <box
                     flexDirection="row"
                     paddingLeft={1}
-                    backgroundColor={selected() ? theme.accent : undefined}
+                    backgroundColor={bgColor()}
+                    border={borderColor() ? ["left"] : undefined}
+                    borderColor={borderColor()}
                     onMouseUp={() => {
                       setSelectedIndex(index())
                       props.onFocus?.()
                     }}
                   >
-                    <text fg={selected() ? theme.background : theme.text}>{item.file}</text>
+                    <Show when={isActiveEdit()}>
+                      <text fg={theme.background}>● </text>
+                    </Show>
+                    <text fg={textColor()}>{item.file}</text>
                     <box flexGrow={1} />
                     <box flexDirection="row" paddingRight={1} gap={1}>
                       <Show when={item.additions}>
-                        <text fg={selected() ? theme.background : theme.success}>+{item.additions}</text>
+                        <text fg={selected() || isActiveEdit() ? theme.background : theme.success}>
+                          +{item.additions}
+                        </text>
                       </Show>
                       <Show when={item.deletions}>
-                        <text fg={selected() ? theme.background : theme.error}>-{item.deletions}</text>
+                        <text fg={selected() || isActiveEdit() ? theme.background : theme.error}>
+                          -{item.deletions}
+                        </text>
                       </Show>
                     </box>
                   </box>
@@ -498,7 +583,8 @@ export function SidebarCode(props: {
               fallback={
                 <text fg={theme.textMuted}>
                   <span style={{ fg: theme.accent }}>v</span>=visual | <span style={{ fg: theme.accent }}>j/k</span>
-                  =move | <span style={{ fg: theme.accent }}>Click</span>=select
+                  =move | <span style={{ fg: theme.accent }}>t</span>=track |{" "}
+                  <span style={{ fg: theme.accent }}>Click</span>=select
                 </text>
               }
             >

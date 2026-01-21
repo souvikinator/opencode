@@ -17,6 +17,7 @@ import type {
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
+  ToolPart,
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
@@ -53,6 +54,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
+      }
+      active_edits: {
+        [sessionID: string]: string[]
+      }
+      last_edit: {
+        [sessionID: string]: {
+          file: string
+          line?: number
+        }
       }
       todo: {
         [sessionID: string]: Todo[]
@@ -91,6 +101,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: [],
       session_status: {},
       session_diff: {},
+      active_edits: {},
+      last_edit: {},
       todo: {},
       message: {},
       part: {},
@@ -206,17 +218,35 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "session.updated": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
+          const sessionID = event.properties.info.id
+          const result = Binary.search(store.session, sessionID, (s) => s.id)
+          const oldSession = result.found ? store.session[result.index] : undefined
+          const newSession = event.properties.info
+
           if (result.found) {
-            setStore("session", result.index, reconcile(event.properties.info))
-            break
+            setStore("session", result.index, reconcile(newSession))
+          } else {
+            setStore(
+              "session",
+              produce((draft) => {
+                draft.splice(result.index, 0, newSession)
+              }),
+            )
           }
-          setStore(
-            "session",
-            produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
-            }),
-          )
+
+          const oldRevert = oldSession?.revert
+          const newRevert = newSession.revert
+          const revertChanged =
+            (oldRevert === undefined && newRevert !== undefined) ||
+            (oldRevert !== undefined && newRevert === undefined) ||
+            oldRevert?.messageID !== newRevert?.messageID ||
+            oldRevert?.partID !== newRevert?.partID
+
+          if (revertChanged) {
+            sdk.client.session.diff({ sessionID }).then((x) => {
+              setStore("session_diff", sessionID, x.data ?? [])
+            })
+          }
           break
         }
 
@@ -279,23 +309,97 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
         }
         case "message.part.updated": {
-          const parts = store.part[event.properties.part.messageID]
+          const part = event.properties.part
+          const parts = store.part[part.messageID]
           if (!parts) {
-            setStore("part", event.properties.part.messageID, [event.properties.part])
-            break
+            setStore("part", part.messageID, [part])
+          } else {
+            const result = Binary.search(parts, part.id, (p) => p.id)
+            if (result.found) {
+              setStore("part", part.messageID, result.index, reconcile(part))
+            } else {
+              setStore(
+                "part",
+                part.messageID,
+                produce((draft) => {
+                  draft.splice(result.index, 0, part)
+                }),
+              )
+            }
           }
-          const result = Binary.search(parts, event.properties.part.id, (p) => p.id)
-          if (result.found) {
-            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
-            break
+
+          if (part.type === "tool" && (part.tool === "edit" || part.tool === "write")) {
+            const toolPart = part as ToolPart
+            const sessionID = toolPart.sessionID
+            const input = toolPart.state.input as { filePath?: string; filepath?: string }
+            const filePath = input.filePath || input.filepath
+
+            if (toolPart.state.status === "running" && filePath) {
+              const current = store.active_edits[sessionID] ?? []
+              if (!current.includes(filePath)) {
+                setStore("active_edits", sessionID, [...current, filePath])
+              }
+            } else if (toolPart.state.status === "completed" || toolPart.state.status === "error") {
+              if (filePath) {
+                const current = store.active_edits[sessionID] ?? []
+                const filtered = current.filter((f) => f !== filePath)
+                setStore("active_edits", sessionID, filtered)
+              }
+
+              if (toolPart.state.status === "completed") {
+                const metadata = toolPart.state.metadata as
+                  | {
+                      filediff?: Snapshot.FileDiff
+                      diff?: string
+                    }
+                  | undefined
+                const filediff = metadata?.filediff
+                if (filediff) {
+                  const currentDiffs = store.session_diff[sessionID] ?? []
+                  const worktree = store.path.worktree
+                  const relativePath =
+                    worktree && filediff.file.startsWith(worktree)
+                      ? filediff.file.slice(worktree.length).replace(/^\//, "")
+                      : filediff.file
+
+                  const existingIndex = currentDiffs.findIndex((d) => {
+                    return (
+                      d.file === relativePath ||
+                      d.file === filediff.file ||
+                      filediff.file.endsWith("/" + d.file) ||
+                      d.file.endsWith("/" + relativePath)
+                    )
+                  })
+
+                  const normalizedDiff: Snapshot.FileDiff = {
+                    ...filediff,
+                    file: relativePath,
+                  }
+
+                  if (existingIndex >= 0) {
+                    setStore("session_diff", sessionID, existingIndex, {
+                      ...currentDiffs[existingIndex],
+                      after: normalizedDiff.after,
+                      additions: normalizedDiff.additions,
+                      deletions: normalizedDiff.deletions,
+                    })
+                  } else {
+                    setStore("session_diff", sessionID, [...currentDiffs, normalizedDiff])
+                  }
+
+                  let editLine: number | undefined
+                  const diff = metadata?.diff
+                  if (diff) {
+                    const hunkMatch = diff.match(/@@ -\d+(?:,\d+)? \+(\d+)/)
+                    if (hunkMatch) {
+                      editLine = parseInt(hunkMatch[1], 10)
+                    }
+                  }
+                  setStore("last_edit", sessionID, { file: relativePath, line: editLine })
+                }
+              }
+            }
           }
-          setStore(
-            "part",
-            event.properties.part.messageID,
-            produce((draft) => {
-              draft.splice(result.index, 0, event.properties.part)
-            }),
-          )
           break
         }
 

@@ -351,32 +351,25 @@ export function Prompt(props: PromptProps) {
       submit()
     },
     addFilePart(file: string, startLine: number, endLine: number, options?: { absolutePath?: string }) {
-      // Build URL with line range
       const pathStr = options?.absolutePath ?? path.resolve(process.cwd(), file)
       const url = pathToFileURL(pathStr)
       url.searchParams.set("start", String(startLine))
       url.searchParams.set("end", String(endLine))
 
-      // Build display text (virtual text shown in input)
       const displayText = `@${file}#${startLine}-${endLine}`
 
-      // Insert the virtual text at current cursor position
       const cursorPos = input.cursorOffset
       const currentText = store.prompt.input
 
-      // Determine if we need a leading space
-      // If we're appending (cursor at end) and there's text before us that isn't a space, add one.
-      // If we're inserting in middle, logic might be more complex, but standard use case is appending.
       let prefix = ""
       if (cursorPos > 0 && currentText[cursorPos - 1] !== " ") {
         prefix = " "
       }
 
+      const insertOffset = prefix.length + displayText.length + 1
+
       const newText = currentText.slice(0, cursorPos) + prefix + displayText + " " + currentText.slice(cursorPos)
 
-      input.setText(newText)
-
-      // Create the file part
       const part: PromptInfo["parts"][number] = {
         type: "file",
         mime: "text/plain",
@@ -393,28 +386,67 @@ export function Prompt(props: PromptProps) {
         },
       }
 
-      // Create extmark for the virtual text
-      const extmarkId = input.extmarks.create({
-        start: cursorPos + prefix.length,
-        end: cursorPos + prefix.length + displayText.length,
-        virtual: true,
-        styleId: fileStyleId,
-        typeId: promptPartTypeId,
+      const updatedParts = store.prompt.parts.map((p) => {
+        if (p.type === "file" && p.source?.text) {
+          if (p.source.text.start >= cursorPos) {
+            return {
+              ...p,
+              source: {
+                ...p.source,
+                text: {
+                  ...p.source.text,
+                  start: p.source.text.start + insertOffset,
+                  end: p.source.text.end + insertOffset,
+                },
+              },
+            }
+          }
+        } else if (p.type === "agent" && p.source) {
+          if (p.source.start >= cursorPos) {
+            return {
+              ...p,
+              source: {
+                ...p.source,
+                start: p.source.start + insertOffset,
+                end: p.source.end + insertOffset,
+              },
+            }
+          }
+        } else if (p.type === "text" && p.source?.text) {
+          if (p.source.text.start >= cursorPos) {
+            return {
+              ...p,
+              source: {
+                ...p.source,
+                text: {
+                  ...p.source.text,
+                  start: p.source.text.start + insertOffset,
+                  end: p.source.text.end + insertOffset,
+                },
+              },
+            }
+          }
+        }
+        return p
       })
 
-      // Update store
+      const allParts = [...updatedParts, part]
+
       setStore(
         produce((draft) => {
           draft.prompt.input = newText
-          const partIndex = draft.prompt.parts.length
-          draft.prompt.parts.push(part)
-          draft.extmarkToPartIndex.set(extmarkId, partIndex)
+          draft.prompt.parts = allParts
         }),
       )
 
-      // Move cursor after the inserted text
+      input.setText(newText)
+      restoreExtmarksFromParts(allParts)
+
       input.cursorOffset = cursorPos + prefix.length + displayText.length + 1
-      input.focus()
+
+      setTimeout(() => {
+        input.focus()
+      }, 0)
     },
     append(text: string) {
       input.insertText(text)
