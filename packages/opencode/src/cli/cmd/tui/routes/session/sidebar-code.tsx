@@ -1,5 +1,5 @@
 import { InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { createMemo, createSignal, Show, For, type Accessor, createEffect, on, batch } from "solid-js"
+import { createMemo, createSignal, Show, For, type Accessor, createEffect, on, batch, createSelector } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme, tint } from "@tui/context/theme"
 import { useKeybind } from "@tui/context/keybind"
@@ -127,6 +127,7 @@ export function SidebarCode(props: {
   const [searchMode, setSearchMode] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal("")
   const [searchMatches, setSearchMatches] = createSignal<number[]>([])
+  const searchMatchesSet = createMemo(() => new Set(searchMatches()))
   const [currentMatchIndex, setCurrentMatchIndex] = createSignal(0)
 
   // Selected file path (can be a diff file or any file from explorer)
@@ -137,6 +138,8 @@ export function SidebarCode(props: {
   const [selectedLineStart, setSelectedLineStart] = createSignal<number | null>(null)
   const [selectedLineEnd, setSelectedLineEnd] = createSignal<number | null>(null)
   const [cursorLine, setCursorLine] = createSignal(0)
+  // Optimization: Efficiently select cursor line without O(N) updates
+  const isCursorLine = createSelector(cursorLine)
   const [visualMode, setVisualMode] = createSignal(false)
   const [isShiftDown, setIsShiftDown] = createSignal(false)
   const [isInteracting, setIsInteracting] = createSignal(false)
@@ -873,8 +876,9 @@ export function SidebarCode(props: {
                 {(line, index) => {
                   const info = createMemo(() => getLineInfo(index()))
                   const isSelected = createMemo(() => isLineSelected(index()))
-                  const isCursor = createMemo(() => cursorLine() === index())
-                  const isMatch = createMemo(() => isSearchMatch(index()))
+                  // Use selector for O(1) updates instead of O(N)
+                  const isCursor = () => isCursorLine(index())
+                  const isMatch = createMemo(() => searchMatchesSet().has(index()))
                   const isCurrentMatch = createMemo(() => isCurrentSearchMatch(index()))
 
                   const bg = createMemo(() => {
