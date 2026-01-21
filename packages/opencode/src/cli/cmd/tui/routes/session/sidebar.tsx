@@ -83,8 +83,8 @@ export function Sidebar(props: {
       <box
         backgroundColor={theme.backgroundPanel}
         width={props.width ?? 42}
-        paddingTop={1}
-        paddingBottom={1}
+        paddingTop={mode() === "code" ? 0 : 1}
+        paddingBottom={mode() === "code" ? 0 : 1}
         paddingLeft={mode() === "code" ? 0 : 2}
         paddingRight={mode() === "code" ? 0 : 2}
         position={props.overlay ? "absolute" : "relative"}

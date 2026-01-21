@@ -1,15 +1,14 @@
-import { ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { createMemo, createSignal, Show, For, type Accessor, createEffect, on } from "solid-js"
+import { InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import { createMemo, createSignal, Show, For, type Accessor, createEffect, on, batch } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme, tint } from "@tui/context/theme"
 import { useKeybind } from "@tui/context/keybind"
-import { useDirectory } from "@tui/context/directory"
 import { useKeyboard } from "@opentui/solid"
-import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import path from "path"
 import { createPatch } from "diff"
 import { useDialog } from "../../ui/dialog"
 import { DialogPrompt } from "../../ui/dialog-prompt"
+import { DialogFileExplorer } from "./dialog-file-explorer"
 
 type HunkInfo = {
   line: number
@@ -112,6 +111,7 @@ export function SidebarCode(props: {
   const dialog = useDialog()
 
   let previewScroll: ScrollBoxRenderable | undefined
+  let searchInput: InputRenderable | undefined
   const diffs = createMemo(() => sync.data.session_diff[props.sessionID] ?? [])
   const activeEdits = createMemo(() => sync.data.active_edits[props.sessionID] ?? [])
   const lastEdit = createMemo(() => sync.data.last_edit[props.sessionID])
@@ -119,6 +119,19 @@ export function SidebarCode(props: {
   const [trackHeight, setTrackHeight] = createSignal(20)
 
   const [trackChanges, setTrackChanges] = createSignal(true)
+  const [showDiff, setShowDiff] = createSignal(true)
+  const [fileListExpanded, setFileListExpanded] = createSignal(false)
+  const [fileListIndex, setFileListIndex] = createSignal(0)
+
+  // In-editor search state
+  const [searchMode, setSearchMode] = createSignal(false)
+  const [searchQuery, setSearchQuery] = createSignal("")
+  const [searchMatches, setSearchMatches] = createSignal<number[]>([])
+  const [currentMatchIndex, setCurrentMatchIndex] = createSignal(0)
+
+  // Selected file path (can be a diff file or any file from explorer)
+  const [selectedFilePath, setSelectedFilePath] = createSignal<string | null>(null)
+  const [fileContent, setFileContent] = createSignal<string | null>(null)
 
   // Line selection state for adding context
   const [selectedLineStart, setSelectedLineStart] = createSignal<number | null>(null)
@@ -130,12 +143,142 @@ export function SidebarCode(props: {
 
   const focused = createMemo(() => props.focused?.() ?? false)
 
+  // Get selected diff file (if any)
+  const selectedDiffFile = createMemo(() => {
+    const filePath = selectedFilePath()
+    if (!filePath) {
+      // Fallback to first diff if no file selected
+      const list = diffs()
+      return list[0]
+    }
+    return diffs().find((d) => d.file === filePath)
+  })
+
+  // The currently displayed file info
   const selectedFile = createMemo(() => {
+    const diffFile = selectedDiffFile()
+    if (diffFile) return diffFile
+
+    // If we have a non-diff file selected, return a placeholder
+    const filePath = selectedFilePath()
+    if (filePath && fileContent() !== null) {
+      return {
+        file: filePath,
+        before: "",
+        after: fileContent() || "",
+        additions: 0,
+        deletions: 0,
+      }
+    }
+
+    // Fallback to first diff
     const list = diffs()
     const idx = selectedIndex()
     if (idx >= 0 && idx < list.length) return list[idx]
     return list[0]
   })
+
+  // Load file content when a non-diff file is selected
+  createEffect(
+    on(selectedFilePath, async (filePath) => {
+      if (!filePath) {
+        setFileContent(null)
+        return
+      }
+
+      // Check if this is a diff file
+      const isDiffFile = diffs().some((d) => d.file === filePath)
+      if (isDiffFile) {
+        setFileContent(null)
+        return
+      }
+
+      // Load file content
+      const worktree = sync.data.path.worktree
+      if (!worktree) {
+        setFileContent(null)
+        return
+      }
+
+      const fullPath = path.resolve(worktree, filePath)
+      try {
+        const file = Bun.file(fullPath)
+        const content = await file.text()
+        setFileContent(content)
+      } catch {
+        setFileContent(null)
+      }
+    }),
+  )
+
+  // Handle file selection from file explorer
+  const handleFileSelect = (filePath: string) => {
+    batch(() => {
+      setSelectedFilePath(filePath)
+      // Update selectedIndex if it's a diff file
+      const idx = diffs().findIndex((d) => d.file === filePath)
+      if (idx >= 0) {
+        setSelectedIndex(idx)
+        setFileListIndex(idx)
+      }
+      // Reset view state
+      setCursorLine(0)
+      setSelectedLineStart(null)
+      setSelectedLineEnd(null)
+      setVisualMode(false)
+      setFileListExpanded(false)
+      previewScroll?.scrollTo(0)
+    })
+    dialog.clear()
+  }
+
+  // Open file explorer dialog
+  const openFileExplorer = () => {
+    setIsInteracting(true)
+    dialog.replace(
+      () => (
+        <DialogFileExplorer
+          sessionID={props.sessionID}
+          currentFile={selectedFilePath() || selectedFile()?.file}
+          onSelect={handleFileSelect}
+        />
+      ),
+      () => setIsInteracting(false),
+    )
+  }
+
+  // Determine if we're showing diff or regular content
+  const isDiffView = createMemo(() => {
+    if (!showDiff()) return false
+    const diff = selectedDiffFile()
+    return !!diff
+  })
+
+  // Get the line mapping for current file
+  const unifiedContent = createMemo(() => {
+    const file = selectedFile()
+    if (!file) return ""
+
+    const before = file.before || ""
+    const after = file.after || ""
+
+    const maxLines = Math.max(before.split("\n").length, after.split("\n").length)
+    const patch = createPatch(file.file, before, after, "", "", { context: maxLines })
+    return patch
+  })
+
+  // Content to display (either diff or raw file content)
+  const displayContent = createMemo(() => {
+    if (isDiffView()) {
+      return unifiedContent()
+    }
+    // For non-diff view, show the after content or loaded file content
+    const file = selectedFile()
+    if (!file) return ""
+    return file.after || ""
+  })
+
+  const lineMapping = createMemo(() => parseDiffLineMapping(unifiedContent()))
 
   // Reset line selection when file changes
   createEffect(
@@ -144,6 +287,9 @@ export function SidebarCode(props: {
       setSelectedLineEnd(null)
       setCursorLine(0)
       setVisualMode(false)
+      setSearchMode(false)
+      setSearchQuery("")
+      setSearchMatches([])
     }),
   )
 
@@ -164,7 +310,11 @@ export function SidebarCode(props: {
     const list = diffs()
     const fileIndex = list.findIndex((d) => d.file === edit.file)
     if (fileIndex >= 0 && fileIndex !== selectedIndex()) {
-      setSelectedIndex(fileIndex)
+      batch(() => {
+        setSelectedIndex(fileIndex)
+        setSelectedFilePath(edit.file)
+        setFileListIndex(fileIndex)
+      })
     }
   })
 
@@ -183,20 +333,52 @@ export function SidebarCode(props: {
     }
   })
 
-  // Get the line mapping for current file
-  const unifiedContent = createMemo(() => {
-    const file = selectedFile()
-    if (!file) return ""
+  // Search functionality - find matches
+  createEffect(
+    on([searchQuery, displayContent], ([query, content]) => {
+      if (!query || !content) {
+        setSearchMatches([])
+        setCurrentMatchIndex(0)
+        return
+      }
 
-    const before = file.before || ""
-    const after = file.after || ""
+      const lines = content.split("\n")
+      const matches: number[] = []
+      const lowerQuery = query.toLowerCase()
 
-    const maxLines = Math.max(before.split("\n").length, after.split("\n").length)
-    const patch = createPatch(file.file, before, after, "", "", { context: maxLines })
-    return patch
-  })
+      lines.forEach((line: string, index: number) => {
+        if (line.toLowerCase().includes(lowerQuery)) {
+          matches.push(index)
+        }
+      })
 
-  const lineMapping = createMemo(() => parseDiffLineMapping(unifiedContent()))
+      setSearchMatches(matches)
+      setCurrentMatchIndex(0)
+
+      // Jump to first match
+      if (matches.length > 0 && previewScroll) {
+        previewScroll.scrollTo(Math.max(0, matches[0] - 3))
+        setCursorLine(matches[0])
+      }
+    }),
+  )
+
+  // Navigate to next/previous search match
+  const navigateSearch = (direction: 1 | -1) => {
+    const matches = searchMatches()
+    if (matches.length === 0) return
+
+    let nextIndex = currentMatchIndex() + direction
+    if (nextIndex < 0) nextIndex = matches.length - 1
+    if (nextIndex >= matches.length) nextIndex = 0
+
+    setCurrentMatchIndex(nextIndex)
+    const line = matches[nextIndex]
+    if (previewScroll) {
+      previewScroll.scrollTo(Math.max(0, line - 3))
+      setCursorLine(line)
+    }
+  }
 
   // Map for fast lookup: displayLine -> info
   const lineInfoMap = createMemo(() => {
@@ -283,14 +465,98 @@ export function SidebarCode(props: {
 
     if (!focused() || isInteracting()) return
 
+    // Let global keybinds pass through (sidebar toggle, etc)
+    if (keybind.match("sidebar_mode_toggle", evt) || keybind.match("sidebar_toggle", evt)) {
+      return
+    }
+
+    // Search mode keyboard handling
+    if (searchMode()) {
+      if (evt.name === "escape") {
+        setSearchMode(false)
+        setSearchQuery("")
+        setSearchMatches([])
+        return
+      }
+      if (evt.name === "return" || (evt.ctrl && evt.name === "n")) {
+        navigateSearch(1)
+        return
+      }
+      if (evt.ctrl && evt.name === "p") {
+        navigateSearch(-1)
+        return
+      }
+      // Let input handle other keys
+      return
+    }
+
     if (evt.name === "escape") {
-      // Clear selection first, then unfocus
+      // Close file list first
+      if (fileListExpanded()) {
+        setFileListExpanded(false)
+        return
+      }
+      // Clear selection first, then exit search, then unfocus
       if (selectedLineStart() !== null || visualMode()) {
         setSelectedLineStart(null)
         setSelectedLineEnd(null)
         setVisualMode(false)
         return
       }
+      return
+    }
+
+    // File list navigation when expanded
+    if (fileListExpanded()) {
+      if (evt.name === "up" || evt.name === "k") {
+        setFileListIndex((i) => Math.max(0, i - 1))
+        return
+      }
+      if (evt.name === "down" || evt.name === "j") {
+        setFileListIndex((i) => Math.min(diffs().length - 1, i + 1))
+        return
+      }
+      if (evt.name === "return") {
+        const file = diffs()[fileListIndex()]
+        if (file) {
+          setSelectedFilePath(file.file)
+          setSelectedIndex(fileListIndex())
+          setFileListExpanded(false)
+        }
+        return
+      }
+      return
+    }
+
+    // 'e' - Toggle file list expansion
+    if (evt.name === "e" && !visualMode() && selectedLineStart() === null && diffs().length > 0) {
+      setFileListExpanded((v) => !v)
+      setFileListIndex(diffs().findIndex((d) => d.file === selectedFile()?.file) || 0)
+      return
+    }
+
+    // Ctrl+Shift+F - Open file explorer
+    if (evt.ctrl && evt.shift && evt.name === "f") {
+      openFileExplorer()
+      return
+    }
+
+    // Ctrl+F - Toggle in-editor search
+    if (evt.ctrl && evt.name === "f") {
+      setSearchMode(true)
+      setTimeout(() => searchInput?.focus(), 10)
+      return
+    }
+
+    // 'd' - Toggle diff view
+    if (evt.name === "d" && !visualMode() && selectedLineStart() === null) {
+      setShowDiff((prev) => !prev)
+      return
+    }
+
+    // 'f' - Open file explorer (alternative)
+    if (evt.name === "f" && !visualMode() && selectedLineStart() === null) {
+      openFileExplorer()
       return
     }
 
@@ -314,29 +580,22 @@ export function SidebarCode(props: {
       return
     }
 
-    // File navigation (when NOT in visual mode and NOT holding shift)
-    if (!visualMode() && !evt.shift && selectedLineStart() === null) {
-      if (keybind.match("sidebar_up", evt)) {
-        setSelectedIndex((prev) => Math.max(0, prev - 1))
-        return
-      }
-      if (keybind.match("sidebar_down", evt)) {
-        setSelectedIndex((prev) => Math.min(diffs().length - 1, prev + 1))
-        return
-      }
-    }
-
     // Code Cursor / Selection Navigation
     if (evt.name === "j" || evt.name === "down") {
-      setCursorLine((prev) => Math.min(prev + 1, totalLines() - 1))
+      const prev = cursorLine()
+      const next = Math.min(prev + 1, totalLines() - 1)
+      setCursorLine(next)
+
       // Adjust scroll if cursor moves out of view
-      if (cursorLine() > (previewScroll?.y ?? 0) + (trackHeight() - 2)) {
-        previewScroll?.scrollBy(1)
+      const scrollY = previewScroll?.y ?? 0
+      const viewHeight = trackHeight() - 2
+      if (next > scrollY + viewHeight) {
+        previewScroll?.scrollTo(next - viewHeight)
       }
 
       if (visualMode() || evt.shift) {
-        if (selectedLineStart() === null) setSelectedLineStart(cursorLine() - 1) // Start from previous
-        setSelectedLineEnd(cursorLine())
+        if (selectedLineStart() === null) setSelectedLineStart(prev)
+        setSelectedLineEnd(next)
       } else if (selectedLineStart() !== null && !evt.shift) {
         setSelectedLineStart(null)
         setSelectedLineEnd(null)
@@ -345,14 +604,18 @@ export function SidebarCode(props: {
     }
 
     if (evt.name === "k" || evt.name === "up") {
-      setCursorLine((prev) => Math.max(0, prev - 1))
-      if (cursorLine() < (previewScroll?.y ?? 0)) {
-        previewScroll?.scrollBy(-1)
+      const prev = cursorLine()
+      const next = Math.max(0, prev - 1)
+      setCursorLine(next)
+
+      const scrollY = previewScroll?.y ?? 0
+      if (next < scrollY) {
+        previewScroll?.scrollTo(next)
       }
 
       if (visualMode() || evt.shift) {
-        if (selectedLineStart() === null) setSelectedLineStart(cursorLine() + 1)
-        setSelectedLineEnd(cursorLine())
+        if (selectedLineStart() === null) setSelectedLineStart(prev)
+        setSelectedLineEnd(next)
       } else if (selectedLineStart() !== null && !evt.shift) {
         setSelectedLineStart(null)
         setSelectedLineEnd(null)
@@ -384,16 +647,24 @@ export function SidebarCode(props: {
     }
   })
 
-  const hunks = createMemo(() => parseHunks(unifiedContent()))
+  const hunks = createMemo(() => (isDiffView() ? parseHunks(unifiedContent()) : []))
 
   const totalLines = createMemo(() => {
-    const content = unifiedContent()
+    const content = displayContent()
     if (!content) return 1
     return Math.max(content.split("\n").length, 1)
   })
 
-  const fileListHeight = createMemo(() => Math.min(Math.max(diffs().length, 1) + 2, 12))
-  const hasFiles = createMemo(() => diffs().length > 0)
+  // Check if line matches search query
+  const isSearchMatch = (lineIndex: number) => {
+    return searchMatches().includes(lineIndex)
+  }
+
+  const isCurrentSearchMatch = (lineIndex: number) => {
+    const matches = searchMatches()
+    if (matches.length === 0) return false
+    return matches[currentMatchIndex()] === lineIndex
+  }
 
   function jumpToLine(line: number) {
     if (!previewScroll) return
@@ -457,158 +728,138 @@ export function SidebarCode(props: {
     return info.fileLine
   }
 
+  // Helper to get line info for non-diff view
+  const getLineInfo = (index: number) => {
+    if (isDiffView()) {
+      return lineInfoMap().get(index) ?? { fileLine: -1, type: "header" }
+    }
+    // For non-diff view, line number is just index + 1
+    return { fileLine: index + 1, type: "context" as const }
+  }
+
+  // Check if file is being actively edited
+  const isFileActiveEdit = createMemo(() => {
+    const file = selectedFile()
+    if (!file) return false
+    const active = activeEdits()
+    const worktree = sync.data.path.worktree
+    return active.some((activePath) => {
+      const relativeActivePath =
+        worktree && activePath.startsWith(worktree) ? activePath.slice(worktree.length).replace(/^\//, "") : activePath
+      return relativeActivePath === file.file || activePath.endsWith("/" + file.file) || file.file === activePath
+    })
+  })
+
   return (
     <box
       flexDirection="column"
       flexGrow={1}
       onMouseUp={() => props.onFocus?.()}
-      border={["left", "right", "top", "bottom"]}
-      borderColor={focused() ? theme.accent : theme.backgroundPanel}
+      border={focused() ? ["left"] : undefined}
+      borderColor={theme.accent}
     >
-      {/* File List Pane */}
-      <box height={fileListHeight()} border={["bottom"]} borderColor={theme.border} paddingBottom={0} flexShrink={0}>
-        <box height={1} paddingLeft={1} backgroundColor={theme.backgroundElement} flexDirection="row">
-          <text fg={theme.textMuted}>
-            Modified Files ({diffs().length})
-            <Show when={focused()}>
-              <span style={{ fg: theme.accent }}> [focused]</span>
-            </Show>
-          </text>
-          <box flexGrow={1} />
-          <box paddingRight={1}>
-            <text fg={trackChanges() ? theme.success : theme.textMuted}>{trackChanges() ? "● Track" : "○ Track"}</text>
-          </box>
-        </box>
-        <scrollbox flexGrow={1}>
-          <Show
-            when={hasFiles()}
-            fallback={
-              <box padding={1}>
-                <text fg={theme.textMuted}>No changes yet.</text>
-              </box>
-            }
-          >
-            <For each={diffs()}>
-              {(item, index) => {
-                const selected = createMemo(() => index() === selectedIndex())
-                const isActiveEdit = createMemo(() => {
-                  const active = activeEdits()
-                  const worktree = sync.data.path.worktree
-                  return active.some((activePath) => {
-                    const relativeActivePath =
-                      worktree && activePath.startsWith(worktree)
-                        ? activePath.slice(worktree.length).replace(/^\//, "")
-                        : activePath
-                    return (
-                      relativeActivePath === item.file ||
-                      activePath.endsWith("/" + item.file) ||
-                      item.file === activePath
-                    )
-                  })
-                })
-
-                const bgColor = createMemo(() => {
-                  if (isActiveEdit()) return theme.warning
-                  if (selected()) return theme.accent
-                  return undefined
-                })
-
-                const textColor = createMemo(() => {
-                  if (isActiveEdit()) return theme.background
-                  if (selected()) return theme.background
-                  return theme.text
-                })
-
-                const borderColor = createMemo(() => {
-                  if (selected() && isActiveEdit()) return theme.accent
-                  return undefined
-                })
-
-                return (
-                  <box
-                    flexDirection="row"
-                    paddingLeft={1}
-                    backgroundColor={bgColor()}
-                    border={borderColor() ? ["left"] : undefined}
-                    borderColor={borderColor()}
-                    onMouseUp={() => {
-                      setSelectedIndex(index())
-                      props.onFocus?.()
-                    }}
-                  >
-                    <Show when={isActiveEdit()}>
-                      <text fg={theme.background}>● </text>
-                    </Show>
-                    <text fg={textColor()}>{item.file}</text>
-                    <box flexGrow={1} />
-                    <box flexDirection="row" paddingRight={1} gap={1}>
-                      <Show when={item.additions}>
-                        <text fg={selected() || isActiveEdit() ? theme.background : theme.success}>
-                          +{item.additions}
-                        </text>
-                      </Show>
-                      <Show when={item.deletions}>
-                        <text fg={selected() || isActiveEdit() ? theme.background : theme.error}>
-                          -{item.deletions}
-                        </text>
-                      </Show>
-                    </box>
-                  </box>
-                )
-              }}
-            </For>
-          </Show>
-        </scrollbox>
-      </box>
-
-      {/* Preview Pane */}
+      {/* Code Preview Pane - Full Height */}
       <box flexGrow={1} flexDirection="column">
         <Show
           when={selectedFile()}
           fallback={
-            <box padding={1} flexGrow={1}>
-              <text fg={theme.textMuted}>Select a file to view changes</text>
+            <box padding={1} flexGrow={1} flexDirection="column" alignItems="center" justifyContent="center">
+              <text fg={theme.textMuted}>No file selected</text>
+              <text fg={theme.textMuted}>
+                <span style={{ fg: theme.accent }}>f</span> files <span style={{ fg: theme.accent }}>e</span> list{" "}
+                <span style={{ fg: theme.accent }}>v</span> select
+              </text>
             </box>
           }
         >
-          {/* Help / Status Bar */}
-          <box
-            height={1}
-            paddingLeft={1}
-            marginBottom={1}
-            backgroundColor={selectedLineStart() !== null ? theme.accent : theme.backgroundPanel}
-          >
-            <Show
-              when={selectedLineStart() !== null}
-              fallback={
+          {/* Search Bar (when active) */}
+          <Show when={searchMode()}>
+            <box
+              height={1}
+              paddingLeft={1}
+              paddingRight={1}
+              backgroundColor={theme.backgroundElement}
+              flexDirection="row"
+              gap={1}
+              flexShrink={0}
+            >
+              <text fg={theme.textMuted}>Search:</text>
+              <input
+                ref={(el) => (searchInput = el)}
+                value={searchQuery()}
+                onInput={(val) => setSearchQuery(val)}
+                flexGrow={1}
+                focusedBackgroundColor={theme.backgroundElement}
+                cursorColor={theme.primary}
+                focusedTextColor={theme.text}
+              />
+              <Show when={searchMatches().length > 0}>
                 <text fg={theme.textMuted}>
-                  <span style={{ fg: theme.accent }}>v</span>=visual | <span style={{ fg: theme.accent }}>j/k</span>
-                  =move | <span style={{ fg: theme.accent }}>t</span>=track |{" "}
-                  <span style={{ fg: theme.accent }}>Click</span>=select
+                  {currentMatchIndex() + 1}/{searchMatches().length}
                 </text>
-              }
+              </Show>
+              <text fg={theme.textMuted}>Enter=next Esc=close</text>
+            </box>
+          </Show>
+
+          {/* Help / Status Bar */}
+          <Show when={selectedLineStart() === null}>
+            <box
+              height={1}
+              paddingLeft={1}
+              paddingRight={1}
+              backgroundColor={theme.backgroundElement}
+              flexDirection="row"
+              justifyContent="space-between"
+              flexShrink={0}
+            >
+              <text fg={theme.textMuted}>
+                <span style={{ fg: theme.accent }}>f</span> files <span style={{ fg: theme.accent }}>^f</span> search{" "}
+                <span style={{ fg: theme.accent }}>v</span> select
+              </text>
+              <box flexDirection="row" gap={1}>
+                <text fg={isDiffView() ? theme.success : theme.textMuted}>{isDiffView() ? "[d]iff" : "d"}</text>
+                <text fg={trackChanges() ? theme.success : theme.textMuted}>{trackChanges() ? "[t]rack" : "t"}</text>
+              </box>
+            </box>
+          </Show>
+
+          {/* Selection Mode Bar */}
+          <Show when={selectedLineStart() !== null}>
+            <box
+              height={1}
+              paddingLeft={1}
+              paddingRight={1}
+              backgroundColor={theme.accent}
+              flexDirection="row"
+              justifyContent="space-between"
+              flexShrink={0}
             >
               {(() => {
                 const start = selectedLineStart()!
                 const end = selectedLineEnd() ?? start
                 const min = Math.min(start, end)
                 const max = Math.max(start, end)
-
                 const minLine = getDisplayLineNumber(min) ?? "?"
                 const maxLine = getDisplayLineNumber(max) ?? "?"
 
                 return (
-                  <text fg={theme.background}>
-                    Sel: {minLine}
-                    {min !== max ? `-${maxLine}` : ""} | <span style={{ fg: theme.background, bold: true }}>c</span>
-                    =comment | <span style={{ fg: theme.background, bold: true }}>Enter</span>=add
-                  </text>
+                  <>
+                    <text fg={theme.background}>
+                      Lines {minLine}
+                      {min !== max ? `-${maxLine}` : ""}
+                    </text>
+                    <text fg={theme.background}>
+                      <span style={{ bold: true }}>c</span> comment <span style={{ bold: true }}>Enter</span> add{" "}
+                      <span style={{ bold: true }}>Esc</span> cancel
+                    </text>
+                  </>
                 )
               })()}
-            </Show>
-          </box>
+            </box>
+          </Show>
 
-          <box flexGrow={1} flexDirection="row">
+          <box flexGrow={1} flexDirection="row" paddingTop={1}>
             <scrollbox
               flexGrow={1}
               ref={(el) => (previewScroll = el)}
@@ -618,34 +869,46 @@ export function SidebarCode(props: {
                 trackOptions: { backgroundColor: theme.backgroundElement, foregroundColor: theme.border },
               }}
             >
-              <For each={unifiedContent().split("\n")}>
+              <For each={displayContent().split("\n")}>
                 {(line, index) => {
-                  const info = createMemo(() => lineInfoMap().get(index()) ?? { fileLine: -1, type: "header" })
+                  const info = createMemo(() => getLineInfo(index()))
                   const isSelected = createMemo(() => isLineSelected(index()))
                   const isCursor = createMemo(() => cursorLine() === index())
+                  const isMatch = createMemo(() => isSearchMatch(index()))
+                  const isCurrentMatch = createMemo(() => isCurrentSearchMatch(index()))
 
                   const bg = createMemo(() => {
                     if (isSelected()) return tint(theme.background, theme.accent, 0.3)
-                    if (isCursor() && focused()) return theme.backgroundElement // highlighting cursor line
+                    if (isCurrentMatch()) return tint(theme.background, theme.warning, 0.4)
+                    if (isMatch()) return tint(theme.background, theme.warning, 0.15)
+                    if (isCursor() && focused()) return theme.backgroundElement
                     return undefined
                   })
 
                   const fgColor = createMemo(() => {
-                    if (info().type === "add") return theme.success
-                    if (info().type === "remove") return theme.error
-                    if (info().type === "header") return theme.textMuted
+                    if (isDiffView()) {
+                      if (info().type === "add") return theme.success
+                      if (info().type === "remove") return theme.error
+                      if (info().type === "header") return theme.textMuted
+                    }
                     return theme.text
                   })
 
+                  // Skip header lines in diff view
+                  const shouldShow = createMemo(() => {
+                    if (!isDiffView()) return true
+                    return info().type !== "header"
+                  })
+
                   return (
-                    <Show when={info().type !== "header"}>
+                    <Show when={shouldShow()}>
                       <box
                         flexDirection="row"
                         backgroundColor={bg()}
                         onMouseUp={() => handleLineClick(index(), isShiftDown())}
                       >
                         {/* Line Number Column */}
-                        <box width={5} paddingRight={1} alignItems="flex-end" flexShrink={0}>
+                        <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
                           <text
                             fg={theme.textMuted}
                             attributes={info().fileLine === -1 ? TextAttributes.DIM : undefined}
@@ -653,9 +916,25 @@ export function SidebarCode(props: {
                             {info().fileLine > 0 ? info().fileLine.toString() : " "}
                           </text>
                         </box>
+                        {/* Diff indicator */}
+                        <Show when={isDiffView()}>
+                          <box width={1} flexShrink={0}>
+                            <text
+                              fg={
+                                info().type === "add"
+                                  ? theme.success
+                                  : info().type === "remove"
+                                    ? theme.error
+                                    : theme.textMuted
+                              }
+                            >
+                              {info().type === "add" ? "+" : info().type === "remove" ? "-" : " "}
+                            </text>
+                          </box>
+                        </Show>
                         {/* Content Column */}
-                        <box flexGrow={1}>
-                          <text fg={fgColor()}>{line}</text>
+                        <box flexGrow={1} paddingLeft={1}>
+                          <text fg={fgColor()}>{isDiffView() && line.length > 0 ? line.slice(1) : line}</text>
                         </box>
                       </box>
                     </Show>
@@ -664,50 +943,146 @@ export function SidebarCode(props: {
               </For>
             </scrollbox>
 
-            {/* Change indicators strip */}
-            <box
-              width={1}
-              flexShrink={0}
-              backgroundColor={theme.backgroundElement}
-              ref={(el) => {
-                createEffect(() => {
-                  if (el) setTrackHeight(el.height || 20)
-                })
-              }}
-            >
-              <For each={markers()}>
-                {(marker) => (
-                  <box
-                    position="absolute"
-                    top={marker.position}
-                    left={0}
-                    width={1}
-                    height={1}
-                    backgroundColor={
-                      marker.type === "add" ? theme.success : marker.type === "remove" ? theme.error : theme.warning
-                    }
-                    onMouseUp={() => jumpToLine(marker.line)}
-                  />
-                )}
-              </For>
-            </box>
+            {/* Change indicators strip (only in diff view) */}
+            <Show when={isDiffView()}>
+              <box
+                width={1}
+                flexShrink={0}
+                backgroundColor={theme.backgroundElement}
+                ref={(el) => {
+                  createEffect(() => {
+                    if (el) setTrackHeight(el.height || 20)
+                  })
+                }}
+              >
+                <For each={markers()}>
+                  {(marker) => (
+                    <box
+                      position="absolute"
+                      top={marker.position}
+                      left={0}
+                      width={1}
+                      height={1}
+                      backgroundColor={
+                        marker.type === "add" ? theme.success : marker.type === "remove" ? theme.error : theme.warning
+                      }
+                      onMouseUp={() => jumpToLine(marker.line)}
+                    />
+                  )}
+                </For>
+              </box>
+            </Show>
           </box>
+
+          {/* Expanded File List (above footer) */}
+          <Show when={fileListExpanded() && diffs().length > 0}>
+            <box flexDirection="column" maxHeight={8} flexShrink={0} backgroundColor={theme.background}>
+              <scrollbox flexGrow={1} scrollbarOptions={{ visible: false }}>
+                <For each={diffs()}>
+                  {(item, index) => {
+                    const isSelected = createMemo(() => index() === fileListIndex())
+                    const isCurrent = createMemo(() => item.file === selectedFile()?.file)
+                    const isEditing = createMemo(() => {
+                      const active = activeEdits()
+                      const worktree = sync.data.path.worktree
+                      return active.some((p) => {
+                        const rel = worktree && p.startsWith(worktree) ? p.slice(worktree.length).replace(/^\//, "") : p
+                        return rel === item.file || p.endsWith("/" + item.file)
+                      })
+                    })
+
+                    return (
+                      <box
+                        flexDirection="row"
+                        paddingLeft={isCurrent() ? 1 : 3}
+                        paddingRight={1}
+                        backgroundColor={isSelected() ? theme.primary : undefined}
+                        onMouseUp={() => {
+                          setSelectedFilePath(item.file)
+                          setSelectedIndex(index())
+                          setFileListExpanded(false)
+                        }}
+                        onMouseOver={() => setFileListIndex(index())}
+                      >
+                        <Show when={isCurrent()}>
+                          <text fg={isSelected() ? theme.background : theme.primary}>● </text>
+                        </Show>
+                        <text
+                          fg={isSelected() ? theme.background : isEditing() ? theme.warning : theme.text}
+                          flexGrow={1}
+                        >
+                          {item.file}
+                        </text>
+                        <box flexDirection="row" gap={1} flexShrink={0}>
+                          <Show when={item.additions}>
+                            <text fg={isSelected() ? theme.background : theme.success}>+{item.additions}</text>
+                          </Show>
+                          <Show when={item.deletions}>
+                            <text fg={isSelected() ? theme.background : theme.error}>-{item.deletions}</text>
+                          </Show>
+                        </box>
+                      </box>
+                    )
+                  }}
+                </For>
+              </scrollbox>
+            </box>
+          </Show>
 
           {/* Footer */}
           <box
             height={1}
             paddingLeft={1}
             paddingRight={1}
-            backgroundColor={theme.backgroundElement}
+            backgroundColor={isFileActiveEdit() ? theme.warning : theme.backgroundElement}
             flexDirection="row"
             justifyContent="space-between"
             flexShrink={0}
+            onMouseUp={() => {
+              if (diffs().length > 0) setFileListExpanded((v) => !v)
+            }}
           >
-            <text fg={theme.text}>{selectedFile()!.file}</text>
-            <text fg={theme.textMuted}>
-              <span style={{ fg: theme.success }}>+{selectedFile()!.additions || 0}</span>{" "}
-              <span style={{ fg: theme.error }}>-{selectedFile()!.deletions || 0}</span>
-            </text>
+            <Show
+              when={!fileListExpanded()}
+              fallback={
+                <box flexDirection="row" gap={1}>
+                  <text fg={theme.textMuted}>▼</text>
+                  <text fg={theme.textMuted}>Close file list</text>
+                </box>
+              }
+            >
+              <box flexDirection="row" gap={1}>
+                {/* Toggle arrow */}
+                <Show when={diffs().length > 0}>
+                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>▶</text>
+                </Show>
+                <Show when={isFileActiveEdit()}>
+                  <text fg={theme.background}>●</text>
+                </Show>
+                <text fg={isFileActiveEdit() ? theme.background : theme.text}>{selectedFile()!.file}</text>
+              </box>
+              <box flexDirection="row" gap={2}>
+                <Show when={diffs().length > 1}>
+                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>
+                    {(() => {
+                      const idx = diffs().findIndex((d) => d.file === selectedFile()?.file)
+                      return `${idx >= 0 ? idx + 1 : 1} / ${diffs().length}`
+                    })()}
+                  </text>
+                </Show>
+                <Show when={selectedDiffFile()}>
+                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>
+                    <span style={{ fg: isFileActiveEdit() ? theme.background : theme.success }}>
+                      +{selectedFile()!.additions || 0}
+                    </span>
+                    {"  "}
+                    <span style={{ fg: isFileActiveEdit() ? theme.background : theme.error }}>
+                      {selectedFile()!.deletions ? `-${selectedFile()!.deletions}` : "0"}
+                    </span>
+                  </text>
+                </Show>
+              </box>
+            </Show>
           </box>
         </Show>
       </box>
