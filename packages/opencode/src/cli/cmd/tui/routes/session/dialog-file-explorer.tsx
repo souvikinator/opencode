@@ -326,7 +326,6 @@ export function DialogFileExplorer(props: {
                     paddingRight={3}
                     backgroundColor={active() ? (isEditing() ? theme.warning : theme.primary) : undefined}
                     onMouseUp={() => handleSelect(item)}
-                    onMouseOver={() => setSelectedIndex(idx())}
                   >
                     <Show when={isCurrent()}>
                       <text fg={active() ? fg : theme.primary}>● </text>
