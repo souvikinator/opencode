@@ -715,6 +715,7 @@ export function SidebarCode(props: {
 
   // Handle mouse click on line
   const handleLineClick = (lineIndex: number, shiftKey: boolean) => {
+    if (!focused()) return
     setCursorLine(lineIndex)
     if (shiftKey && selectedLineStart() !== null) {
       setSelectedLineEnd(lineIndex)
@@ -817,6 +818,7 @@ export function SidebarCode(props: {
               flexShrink={0}
             >
               <text fg={theme.textMuted}>
+                <span style={{ fg: theme.accent }}>{keybind.print("sidebar_focus")}</span> focus{" "}
                 <span style={{ fg: theme.accent }}>f</span> files <span style={{ fg: theme.accent }}>^f</span> search{" "}
                 <span style={{ fg: theme.accent }}>v</span> select
               </text>
