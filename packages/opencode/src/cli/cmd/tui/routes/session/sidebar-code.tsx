@@ -481,6 +481,10 @@ export function SidebarCode(props: {
         setSearchMatches([])
         return
       }
+      if (evt.ctrl && evt.name === "f") {
+        setSearchMode(false)
+        return
+      }
       if (evt.name === "return" || (evt.ctrl && evt.name === "n")) {
         navigateSearch(1)
         return
@@ -490,6 +494,13 @@ export function SidebarCode(props: {
         return
       }
       // Let input handle other keys
+      return
+    }
+
+    // Ctrl+F - Toggle in-editor search
+    if (evt.ctrl && evt.name === "f") {
+      setSearchMode(true)
+      setTimeout(() => searchInput?.focus(), 10)
       return
     }
 
@@ -982,7 +993,14 @@ export function SidebarCode(props: {
 
           {/* Expanded File List (above footer) */}
           <Show when={fileListExpanded() && diffs().length > 0}>
-            <box flexDirection="column" maxHeight={8} flexShrink={0} backgroundColor={theme.background}>
+            <box
+              flexDirection="column"
+              maxHeight={8}
+              flexShrink={0}
+              backgroundColor={theme.background}
+              border={["top"]}
+              borderColor={theme.border}
+            >
               <scrollbox flexGrow={1} scrollbarOptions={{ visible: false }}>
                 <For each={diffs()}>
                   {(item, index) => {
