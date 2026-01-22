@@ -58,6 +58,8 @@ export function Sidebar(props: {
     }).format(total)
   })
 
+  const focused = createMemo(() => props.focused?.() ?? false)
+
   const context = createMemo(() => {
     const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
     if (!last) return
@@ -102,7 +104,7 @@ export function Sidebar(props: {
             <scrollbox flexGrow={1}>
               <box flexShrink={0} gap={1} paddingRight={1}>
                 <box paddingRight={1}>
-                  <text fg={theme.text}>
+                  <text fg={focused() ? theme.text : theme.textMuted}>
                     <b>{session().title}</b>
                   </text>
                   <Show when={session().share?.url}>
@@ -110,7 +112,7 @@ export function Sidebar(props: {
                   </Show>
                 </box>
                 <box>
-                  <text fg={theme.text}>
+                  <text fg={focused() ? theme.text : theme.textMuted}>
                     <b>Context</b>
                   </text>
                   <text fg={theme.textMuted}>{context()?.tokens ?? 0} tokens</text>
@@ -125,9 +127,9 @@ export function Sidebar(props: {
                       onMouseDown={() => mcpEntries().length > 2 && setExpanded("mcp", !expanded.mcp)}
                     >
                       <Show when={mcpEntries().length > 2}>
-                        <text fg={theme.text}>{expanded.mcp ? "▼" : "▶"}</text>
+                        <text fg={focused() ? theme.text : theme.textMuted}>{expanded.mcp ? "▼" : "▶"}</text>
                       </Show>
-                      <text fg={theme.text}>
+                      <text fg={focused() ? theme.text : theme.textMuted}>
                         <b>MCP</b>
                         <Show when={!expanded.mcp}>
                           <span style={{ fg: theme.textMuted }}>
@@ -185,9 +187,9 @@ export function Sidebar(props: {
                     onMouseDown={() => sync.data.lsp.length > 2 && setExpanded("lsp", !expanded.lsp)}
                   >
                     <Show when={sync.data.lsp.length > 2}>
-                      <text fg={theme.text}>{expanded.lsp ? "▼" : "▶"}</text>
+                      <text fg={focused() ? theme.text : theme.textMuted}>{expanded.lsp ? "▼" : "▶"}</text>
                     </Show>
-                    <text fg={theme.text}>
+                    <text fg={focused() ? theme.text : theme.textMuted}>
                       <b>LSP</b>
                     </text>
                   </box>
@@ -229,9 +231,9 @@ export function Sidebar(props: {
                       onMouseDown={() => todo().length > 2 && setExpanded("todo", !expanded.todo)}
                     >
                       <Show when={todo().length > 2}>
-                        <text fg={theme.text}>{expanded.todo ? "▼" : "▶"}</text>
+                        <text fg={focused() ? theme.text : theme.textMuted}>{expanded.todo ? "▼" : "▶"}</text>
                       </Show>
-                      <text fg={theme.text}>
+                      <text fg={focused() ? theme.text : theme.textMuted}>
                         <b>Todo</b>
                       </text>
                     </box>
@@ -248,9 +250,9 @@ export function Sidebar(props: {
                       onMouseDown={() => diff().length > 2 && setExpanded("diff", !expanded.diff)}
                     >
                       <Show when={diff().length > 2}>
-                        <text fg={theme.text}>{expanded.diff ? "▼" : "▶"}</text>
+                        <text fg={focused() ? theme.text : theme.textMuted}>{expanded.diff ? "▼" : "▶"}</text>
                       </Show>
-                      <text fg={theme.text}>
+                      <text fg={focused() ? theme.text : theme.textMuted}>
                         <b>Modified Files</b>
                       </text>
                     </box>
@@ -316,11 +318,11 @@ export function Sidebar(props: {
               </Show>
               <text>
                 <span style={{ fg: theme.textMuted }}>{directory().split("/").slice(0, -1).join("/")}/</span>
-                <span style={{ fg: theme.text }}>{directory().split("/").at(-1)}</span>
+                <span style={{ fg: focused() ? theme.text : theme.textMuted }}>{directory().split("/").at(-1)}</span>
               </text>
               <text fg={theme.textMuted}>
                 <span style={{ fg: theme.success }}>•</span> <b>Open</b>
-                <span style={{ fg: theme.text }}>
+                <span style={{ fg: focused() ? theme.text : theme.textMuted }}>
                   <b>Code</b>
                 </span>{" "}
                 <span>{Installation.VERSION}</span>

@@ -138,11 +138,11 @@ export function SidebarCode(props: {
   const [selectedLineStart, setSelectedLineStart] = createSignal<number | null>(null)
   const [selectedLineEnd, setSelectedLineEnd] = createSignal<number | null>(null)
   const [cursorLine, setCursorLine] = createSignal(0)
-  // Optimization: Efficiently select cursor line without O(N) updates
   const isCursorLine = createSelector(cursorLine)
   const [visualMode, setVisualMode] = createSignal(false)
   const [isShiftDown, setIsShiftDown] = createSignal(false)
   const [isInteracting, setIsInteracting] = createSignal(false)
+  const [scrollY, setScrollY] = createSignal(0)
 
   const focused = createMemo(() => props.focused?.() ?? false)
 
@@ -281,14 +281,30 @@ export function SidebarCode(props: {
     return file.after || ""
   })
 
+  const totalLines = createMemo(() => {
+    const content = displayContent()
+    if (!content) return 1
+    return Math.max(content.split("\n").length, 1)
+  })
+
   const lineMapping = createMemo(() => parseDiffLineMapping(unifiedContent()))
 
-  // Reset line selection when file changes
+  // Track scroll position for virtualization
+  createEffect(() => {
+    if (!previewScroll) return
+    const updateScroll = () => setScrollY(previewScroll?.y ?? 0)
+    updateScroll()
+    const interval = setInterval(updateScroll, 50)
+    return () => clearInterval(interval)
+  })
+
+  // Reset scroll when file changes
   createEffect(
     on(selectedFile, () => {
+      setScrollY(0)
+      setCursorLine(0)
       setSelectedLineStart(null)
       setSelectedLineEnd(null)
-      setCursorLine(0)
       setVisualMode(false)
       setSearchMode(false)
       setSearchQuery("")
@@ -661,17 +677,14 @@ export function SidebarCode(props: {
     }
   })
 
+  // Pre-compute all lines once to avoid repeated splits
+  const allLines = createMemo(() => displayContent().split("\n"))
+
   const hunks = createMemo(() => (isDiffView() ? parseHunks(unifiedContent()) : []))
 
-  const totalLines = createMemo(() => {
-    const content = displayContent()
-    if (!content) return 1
-    return Math.max(content.split("\n").length, 1)
-  })
-
-  // Check if line matches search query
+  // Check if line matches search query - use Set for O(1) lookup
   const isSearchMatch = (lineIndex: number) => {
-    return searchMatches().includes(lineIndex)
+    return searchMatchesSet().has(lineIndex)
   }
 
   const isCurrentSearchMatch = (lineIndex: number) => {
@@ -828,7 +841,7 @@ export function SidebarCode(props: {
               justifyContent="space-between"
               flexShrink={0}
             >
-              <text fg={theme.textMuted}>
+              <text fg={focused() ? theme.text : theme.textMuted}>
                 <span style={{ fg: theme.accent }}>{keybind.print("sidebar_focus")}</span> focus{" "}
                 <span style={{ fg: theme.accent }}>f</span> files <span style={{ fg: theme.accent }}>^f</span> search{" "}
                 <span style={{ fg: theme.accent }}>v</span> select
@@ -885,14 +898,14 @@ export function SidebarCode(props: {
                 trackOptions: { backgroundColor: theme.backgroundElement, foregroundColor: theme.border },
               }}
             >
-              <For each={displayContent().split("\n")}>
+              <For each={allLines()}>
                 {(line, index) => {
-                  const info = createMemo(() => getLineInfo(index()))
-                  const isSelected = createMemo(() => isLineSelected(index()))
-                  // Use selector for O(1) updates instead of O(N)
-                  const isCursor = () => isCursorLine(index())
-                  const isMatch = createMemo(() => searchMatchesSet().has(index()))
-                  const isCurrentMatch = createMemo(() => isCurrentSearchMatch(index()))
+                  const lineNum = index()
+                  const info = createMemo(() => getLineInfo(lineNum))
+                  const isSelected = createMemo(() => isLineSelected(lineNum))
+                  const isCursor = () => isCursorLine(lineNum)
+                  const isMatch = createMemo(() => searchMatchesSet().has(lineNum))
+                  const isCurrentMatch = createMemo(() => isCurrentSearchMatch(lineNum))
 
                   const bg = createMemo(() => {
                     if (isSelected()) return tint(theme.background, theme.accent, 0.3)
@@ -911,7 +924,6 @@ export function SidebarCode(props: {
                     return theme.text
                   })
 
-                  // Skip header lines in diff view
                   const shouldShow = createMemo(() => {
                     if (!isDiffView()) return true
                     return info().type !== "header"
@@ -922,9 +934,8 @@ export function SidebarCode(props: {
                       <box
                         flexDirection="row"
                         backgroundColor={bg()}
-                        onMouseUp={() => handleLineClick(index(), isShiftDown())}
+                        onMouseUp={() => handleLineClick(lineNum, isShiftDown())}
                       >
-                        {/* Line Number Column */}
                         <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
                           <text
                             fg={theme.textMuted}
@@ -933,7 +944,6 @@ export function SidebarCode(props: {
                             {info().fileLine > 0 ? info().fileLine.toString() : " "}
                           </text>
                         </box>
-                        {/* Diff indicator */}
                         <Show when={isDiffView()}>
                           <box width={1} flexShrink={0}>
                             <text
@@ -949,7 +959,6 @@ export function SidebarCode(props: {
                             </text>
                           </box>
                         </Show>
-                        {/* Content Column */}
                         <box flexGrow={1} paddingLeft={1}>
                           <text fg={fgColor()}>{isDiffView() && line.length > 0 ? line.slice(1) : line}</text>
                         </box>
@@ -1070,24 +1079,26 @@ export function SidebarCode(props: {
               when={!fileListExpanded()}
               fallback={
                 <box flexDirection="row" gap={1}>
-                  <text fg={theme.textMuted}>▼</text>
-                  <text fg={theme.textMuted}>Close file list</text>
+                  <text fg={focused() ? theme.text : theme.textMuted}>▼</text>
+                  <text fg={focused() ? theme.text : theme.textMuted}>Close file list</text>
                 </box>
               }
             >
               <box flexDirection="row" gap={1}>
                 {/* Toggle arrow */}
                 <Show when={diffs().length > 0}>
-                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>▶</text>
+                  <text fg={isFileActiveEdit() ? theme.background : focused() ? theme.text : theme.textMuted}>▶</text>
                 </Show>
                 <Show when={isFileActiveEdit()}>
                   <text fg={theme.background}>●</text>
                 </Show>
-                <text fg={isFileActiveEdit() ? theme.background : theme.text}>{selectedFile()!.file}</text>
+                <text fg={isFileActiveEdit() ? theme.background : focused() ? theme.text : theme.textMuted}>
+                  {selectedFile()!.file}
+                </text>
               </box>
               <box flexDirection="row" gap={2}>
                 <Show when={diffs().length > 1}>
-                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>
+                  <text fg={isFileActiveEdit() ? theme.background : focused() ? theme.text : theme.textMuted}>
                     {(() => {
                       const idx = diffs().findIndex((d) => d.file === selectedFile()?.file)
                       return `${idx >= 0 ? idx + 1 : 1} / ${diffs().length}`
@@ -1095,12 +1106,20 @@ export function SidebarCode(props: {
                   </text>
                 </Show>
                 <Show when={selectedDiffFile()}>
-                  <text fg={isFileActiveEdit() ? theme.background : theme.textMuted}>
-                    <span style={{ fg: isFileActiveEdit() ? theme.background : theme.success }}>
+                  <text fg={isFileActiveEdit() ? theme.background : focused() ? theme.text : theme.textMuted}>
+                    <span
+                      style={{
+                        fg: isFileActiveEdit() ? theme.background : focused() ? theme.success : theme.textMuted,
+                      }}
+                    >
                       +{selectedFile()!.additions || 0}
                     </span>
                     {"  "}
-                    <span style={{ fg: isFileActiveEdit() ? theme.background : theme.error }}>
+                    <span
+                      style={{
+                        fg: isFileActiveEdit() ? theme.background : focused() ? theme.error : theme.textMuted,
+                      }}
+                    >
                       {selectedFile()!.deletions ? `-${selectedFile()!.deletions}` : "0"}
                     </span>
                   </text>
