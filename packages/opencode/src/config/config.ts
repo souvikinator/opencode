@@ -647,8 +647,6 @@ export namespace Config {
       sidebar_down: z.string().optional().default("down,j").describe("Navigate down in sidebar file list"),
       sidebar_view_toggle: z.string().optional().default("v").describe("Toggle between diff and code view in sidebar"),
       sidebar_focus: z.string().optional().default("ctrl+e").describe("Toggle focus between chat and sidebar"),
-      overlay_finder: z.string().optional().default("ctrl+shift+f").describe("Toggle file finder overlay"),
-      overlay_editor: z.string().optional().default("ctrl+shift+e").describe("Toggle editor overlay"),
       scrollbar_toggle: z.string().optional().default("none").describe("Toggle session scrollbar"),
       username_toggle: z.string().optional().default("none").describe("Toggle username visibility"),
       status_view: z.string().optional().default("<leader>s").describe("View status"),

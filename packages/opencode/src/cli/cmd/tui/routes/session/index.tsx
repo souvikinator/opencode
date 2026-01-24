@@ -59,8 +59,6 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import type { CodeReference } from "./sidebar-code"
-import { OverlayFileFinder } from "./overlay-file-finder"
-import { OverlayEditor } from "./overlay-editor"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import { Clipboard } from "../../util/clipboard"
@@ -142,12 +140,7 @@ export function Session() {
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
-  const [sidebarMode, setSidebarMode] = kv.signal<"info" | "code">("sidebar_mode", "info")
-
-  // Overlay state management (mutually exclusive)
-  const [overlayState, setOverlayState] = createSignal<"none" | "finder" | "editor">("none")
-  const [selectedEditorFile, setSelectedEditorFile] = kv.signal<string | null>("last_editor_file", null)
-
+  const [sidebarMode, setSidebarMode] = kv.signal<"info" | "code" | "terminal">("sidebar_mode", "info")
   const [conceal, setConceal] = createSignal(true)
   const [showThinking, setShowThinking] = kv.signal("thinking_visibility", true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
@@ -165,7 +158,7 @@ export function Session() {
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const sidebarWidth = createMemo(() => (sidebarMode() === "code" ? 85 : 42))
+  const sidebarWidth = createMemo(() => (sidebarMode() === "code" || sidebarMode() === "terminal" ? 85 : 42))
   const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? sidebarWidth() : 0) - 4)
 
   const scrollAcceleration = createMemo(() => {
@@ -241,52 +234,9 @@ export function Session() {
     }
   }
 
-  // Overlay handlers
-  const handleFileSelect = (file: string) => {
-    batch(() => {
-      setSelectedEditorFile(() => file)
-      setOverlayState("editor")
-    })
-  }
-
-  const handleOpenFinder = () => {
-    setOverlayState("finder")
-  }
-
-  const handleCloseOverlay = () => {
-    setOverlayState("none")
-  }
-
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
   useKeyboard((evt) => {
-    // Ctrl+Shift+F: Toggle file finder
-    if (evt.ctrl && evt.shift && evt.name === "f") {
-      if (overlayState() === "finder") {
-        setOverlayState("none")
-      } else {
-        setOverlayState("finder")
-      }
-      return
-    }
-
-    // Ctrl+Shift+E: Toggle editor
-    if (evt.ctrl && evt.shift && evt.name === "e") {
-      if (overlayState() === "editor") {
-        setOverlayState("none")
-      } else {
-        // Auto-select first changed file if none selected
-        if (!selectedEditorFile()) {
-          const diffs = sync.data.session_diff[route.sessionID] ?? []
-          if (diffs.length > 0) {
-            setSelectedEditorFile(() => diffs[0].file)
-          }
-        }
-        setOverlayState("editor")
-      }
-      return
-    }
-
     if (keybind.match("sidebar_focus", evt)) {
       if (!sidebarVisible()) return
       setFocusPane((prev) => (prev === "chat" ? "sidebar" : "chat"))
@@ -559,6 +509,29 @@ export function Session() {
           sessionID: route.sessionID,
           messageID: message.id,
         })
+      },
+    },
+    {
+      title: sidebarVisible() && sidebarMode() === "terminal" ? "Hide terminal" : "Show terminal",
+      value: "session.sidebar.terminal.toggle",
+      keybind: "sidebar_terminal_toggle" as any,
+      category: "Session",
+      onSelect: (dialog) => {
+        if (sidebarVisible() && sidebarMode() === "terminal") {
+          batch(() => {
+            setSidebar(() => "hide")
+            setSidebarOpen(false)
+            setFocusPane("chat")
+          })
+        } else {
+          setSidebarMode(() => "terminal")
+          batch(() => {
+            setSidebar(() => "auto")
+            setSidebarOpen(true)
+            setFocusPane("sidebar")
+          })
+        }
+        dialog.clear()
       },
     },
     {
@@ -1242,21 +1215,6 @@ export function Session() {
               </box>
             </Match>
           </Switch>
-        </Show>
-
-        {/* Overlay Components - Mutually Exclusive */}
-        <Show when={overlayState() === "finder"}>
-          <OverlayFileFinder sessionID={route.sessionID} onSelect={handleFileSelect} onClose={handleCloseOverlay} />
-        </Show>
-
-        <Show when={overlayState() === "editor"}>
-          <OverlayEditor
-            sessionID={route.sessionID}
-            selectedFile={selectedEditorFile()}
-            onAddContext={handleAddContext}
-            onClose={handleCloseOverlay}
-            onOpenFinder={handleOpenFinder}
-          />
         </Show>
       </box>
     </context.Provider>
