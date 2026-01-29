@@ -83,6 +83,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
       path: Path
+      autoAcceptEdits: boolean
     }>({
       provider_next: {
         all: [],
@@ -112,6 +113,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: [],
       vcs: undefined,
       path: { state: "", config: "", worktree: "", directory: "" },
+      autoAcceptEdits: false,
     })
 
     const sdk = useSDK()

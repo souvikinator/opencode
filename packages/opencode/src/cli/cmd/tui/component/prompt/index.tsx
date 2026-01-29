@@ -16,6 +16,7 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useCommandDialog } from "../dialog-command"
 import { useRenderer } from "@opentui/solid"
+import { RGBA } from "@opentui/core"
 import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
@@ -77,6 +78,28 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+
+  const [pulse, setPulse] = createSignal(1)
+  onMount(() => {
+    const interval = setInterval(() => {
+      if (!kv.get("animations_enabled", true)) {
+        setPulse(1)
+        return
+      }
+      setPulse(0.5 + Math.sin(Date.now() / 400) * 0.5)
+    }, 50)
+    onCleanup(() => clearInterval(interval))
+  })
+
+  const glowingAccent = createMemo(() => {
+    const color = theme.accent
+    return RGBA.fromInts(
+      Math.round(color.r * 255),
+      Math.round(color.g * 255),
+      Math.round(color.b * 255),
+      Math.round(pulse() * 255),
+    )
+  })
 
   function promptModelWarning() {
     toast.show({
@@ -921,6 +944,27 @@ export function Prompt(props: PromptProps) {
                   setStore("extmarkToPartIndex", new Map())
                   return
                 }
+                if (e.name === "h" && e.ctrl) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  sync.set("autoAcceptEdits", (prev) => !prev)
+                  const newMode = !sync.data.autoAcceptEdits
+                  toast.show({
+                    message: newMode ? "Auto-accept edits enabled" : "Auto-accept edits disabled",
+                    variant: "info",
+                    duration: 2000,
+                  })
+                  return
+                }
+                if (e.name === "tab" && !e.shift) {
+                  // If autocomplete is visible, it handles tab
+                  if (autocomplete.visible) {
+                    autocomplete.onKeyDown(e)
+                    return
+                  }
+                  // Let agent_cycle (mapped to tab) handle it globally
+                  return
+                }
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
                     await exit()
@@ -1065,6 +1109,10 @@ export function Prompt(props: PromptProps) {
                       <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
                     </text>
                   </Show>
+                  <Show when={sync.data.autoAcceptEdits}>
+                    <text fg={theme.textMuted}>·</text>
+                    <text fg={glowingAccent()}>auto accept on</text>
+                  </Show>
                 </box>
               </Show>
             </box>
@@ -1186,6 +1234,9 @@ export function Prompt(props: PromptProps) {
                       {keybind.print("variant_cycle")} <span style={{ fg: theme.textMuted }}>variants</span>
                     </text>
                   </Show>
+                  <text fg={theme.text}>
+                    ctrl+h <span style={{ fg: theme.textMuted }}>toggle</span>
+                  </text>
                   <text fg={theme.text}>
                     {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>agents</span>
                   </text>

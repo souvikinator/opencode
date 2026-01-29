@@ -1,5 +1,17 @@
-import { InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
-import { createMemo, createSignal, Show, For, type Accessor, createEffect, on, batch, createSelector } from "solid-js"
+import { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
+import {
+  createMemo,
+  createSignal,
+  Show,
+  For,
+  type Accessor,
+  createEffect,
+  on,
+  batch,
+  createSelector,
+  Switch,
+  Match,
+} from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme, tint } from "@tui/context/theme"
 import { useKeybind } from "@tui/context/keybind"
@@ -53,11 +65,38 @@ function parseHunks(patch: string): HunkInfo[] {
   return hunks
 }
 
+// Consecutive add lines that can be rendered as one text block
+type AddChunk = {
+  type: "add"
+  startIndex: number
+  lines: { line: string; fileLine: number; originalIndex: number }[]
+}
+
+// Consecutive remove lines that can be rendered as one text block
+type RemoveChunk = {
+  type: "remove"
+  startIndex: number
+  lines: { line: string; originalIndex: number }[]
+}
+
+// Consecutive unchanged context lines
+type ContextChunk = {
+  type: "context"
+  startIndex: number
+  lines: { line: string; fileLine: number; originalIndex: number }[]
+}
+
+type Chunk = ContextChunk | AddChunk | RemoveChunk
+
 // Parse diff content to map display lines to actual file lines
 function parseDiffLineMapping(
   patch: string,
-): { displayLine: number; fileLine: number; type: "context" | "add" | "remove" | "header" }[] {
-  const mapping: { displayLine: number; fileLine: number; type: "context" | "add" | "remove" | "header" }[] = []
+): { displayLine: number; fileLine: number; type: "context" | "add" | "remove" | "hunk" | "meta" }[] {
+  const mapping: {
+    displayLine: number
+    fileLine: number
+    type: "context" | "add" | "remove" | "hunk" | "meta"
+  }[] = []
   const lines = patch.split("\n")
   let displayLine = 0
   let fileLine = 0
@@ -67,13 +106,13 @@ function parseDiffLineMapping(
     const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
     if (hunkMatch) {
       fileLine = parseInt(hunkMatch[1], 10)
-      mapping.push({ displayLine, fileLine: -1, type: "header" })
+      mapping.push({ displayLine, fileLine: -1, type: "hunk" })
       displayLine++
       continue
     }
 
     if (line.startsWith("---") || line.startsWith("+++") || line.startsWith("diff ") || line.startsWith("index ")) {
-      mapping.push({ displayLine, fileLine: -1, type: "header" })
+      mapping.push({ displayLine, fileLine: -1, type: "meta" })
       displayLine++
       continue
     }
@@ -91,7 +130,7 @@ function parseDiffLineMapping(
       displayLine++
     } else {
       // Fallback for other lines
-      mapping.push({ displayLine, fileLine: -1, type: "header" })
+      mapping.push({ displayLine, fileLine: -1, type: "meta" })
       displayLine++
     }
   }
@@ -281,12 +320,6 @@ export function SidebarCode(props: {
     return file.after || ""
   })
 
-  const totalLines = createMemo(() => {
-    const content = displayContent()
-    if (!content) return 1
-    return Math.max(content.split("\n").length, 1)
-  })
-
   const lineMapping = createMemo(() => parseDiffLineMapping(unifiedContent()))
 
   // Track scroll position for virtualization
@@ -347,8 +380,11 @@ export function SidebarCode(props: {
     const mapping = lineMapping()
     const displayLine = mapping.find((m) => m.fileLine === edit.line && m.type === "add")
     if (displayLine) {
-      previewScroll.scrollTo(Math.max(0, displayLine.displayLine - 5))
-      setCursorLine(displayLine.displayLine)
+      const renderIdx = getRenderIndex(displayLine.displayLine)
+      if (renderIdx !== -1) {
+        previewScroll.scrollTo(Math.max(0, renderIdx - 5))
+        setCursorLine(displayLine.displayLine)
+      }
     }
   })
 
@@ -376,8 +412,11 @@ export function SidebarCode(props: {
 
       // Jump to first match
       if (matches.length > 0 && previewScroll) {
-        previewScroll.scrollTo(Math.max(0, matches[0] - 3))
-        setCursorLine(matches[0])
+        const renderIdx = getRenderIndex(matches[0])
+        if (renderIdx !== -1) {
+          previewScroll.scrollTo(Math.max(0, renderIdx - 3))
+          setCursorLine(matches[0])
+        }
       }
     }),
   )
@@ -394,8 +433,11 @@ export function SidebarCode(props: {
     setCurrentMatchIndex(nextIndex)
     const line = matches[nextIndex]
     if (previewScroll) {
-      previewScroll.scrollTo(Math.max(0, line - 3))
-      setCursorLine(line)
+      const renderIdx = getRenderIndex(line)
+      if (renderIdx !== -1) {
+        previewScroll.scrollTo(Math.max(0, renderIdx - 3))
+        setCursorLine(line)
+      }
     }
   }
 
@@ -612,43 +654,58 @@ export function SidebarCode(props: {
 
     // Code Cursor / Selection Navigation
     if (evt.name === "j" || evt.name === "down") {
-      const prev = cursorLine()
-      const next = Math.min(prev + 1, totalLines() - 1)
-      setCursorLine(next)
+      const items = renderableItems()
+      const prevLine = cursorLine()
+      const currentRenderIdx = getRenderIndex(prevLine)
+      const startIdx = currentRenderIdx === -1 ? 0 : currentRenderIdx
+      const nextRenderIdx = Math.min(items.length - 1, startIdx + 1)
+      const nextItem = items[nextRenderIdx]
 
-      // Adjust scroll if cursor moves out of view
-      const scrollY = previewScroll?.y ?? 0
-      const viewHeight = trackHeight() - 2
-      if (next > scrollY + viewHeight) {
-        previewScroll?.scrollTo(next - viewHeight)
-      }
+      if (nextItem) {
+        const nextLine = nextItem.originalIndex
+        setCursorLine(nextLine)
 
-      if (visualMode() || evt.shift) {
-        if (selectedLineStart() === null) setSelectedLineStart(prev)
-        setSelectedLineEnd(next)
-      } else if (selectedLineStart() !== null && !evt.shift) {
-        setSelectedLineStart(null)
-        setSelectedLineEnd(null)
+        const scrollY = previewScroll?.y ?? 0
+        const viewHeight = trackHeight() - 2
+        if (nextRenderIdx > scrollY + viewHeight) {
+          previewScroll?.scrollTo(nextRenderIdx - viewHeight)
+        }
+
+        if (visualMode() || evt.shift) {
+          if (selectedLineStart() === null) setSelectedLineStart(prevLine)
+          setSelectedLineEnd(nextLine)
+        } else if (selectedLineStart() !== null && !evt.shift) {
+          setSelectedLineStart(null)
+          setSelectedLineEnd(null)
+        }
       }
       return
     }
 
     if (evt.name === "k" || evt.name === "up") {
-      const prev = cursorLine()
-      const next = Math.max(0, prev - 1)
-      setCursorLine(next)
+      const items = renderableItems()
+      const prevLine = cursorLine()
+      const currentRenderIdx = getRenderIndex(prevLine)
+      const startIdx = currentRenderIdx === -1 ? 0 : currentRenderIdx
+      const nextRenderIdx = Math.max(0, startIdx - 1)
+      const nextItem = items[nextRenderIdx]
 
-      const scrollY = previewScroll?.y ?? 0
-      if (next < scrollY) {
-        previewScroll?.scrollTo(next)
-      }
+      if (nextItem) {
+        const nextLine = nextItem.originalIndex
+        setCursorLine(nextLine)
 
-      if (visualMode() || evt.shift) {
-        if (selectedLineStart() === null) setSelectedLineStart(prev)
-        setSelectedLineEnd(next)
-      } else if (selectedLineStart() !== null && !evt.shift) {
-        setSelectedLineStart(null)
-        setSelectedLineEnd(null)
+        const scrollY = previewScroll?.y ?? 0
+        if (nextRenderIdx < scrollY) {
+          previewScroll?.scrollTo(nextRenderIdx)
+        }
+
+        if (visualMode() || evt.shift) {
+          if (selectedLineStart() === null) setSelectedLineStart(prevLine)
+          setSelectedLineEnd(nextLine)
+        } else if (selectedLineStart() !== null && !evt.shift) {
+          setSelectedLineStart(null)
+          setSelectedLineEnd(null)
+        }
       }
       return
     }
@@ -666,19 +723,186 @@ export function SidebarCode(props: {
     }
 
     if (evt.name === "pageup") {
+      const items = renderableItems()
+      const currentRenderIdx = getRenderIndex(cursorLine())
+      const startIdx = currentRenderIdx === -1 ? 0 : currentRenderIdx
+      const nextRenderIdx = Math.max(0, startIdx - 10)
+      const nextItem = items[nextRenderIdx]
+
       previewScroll?.scrollBy(-10)
-      setCursorLine((prev) => Math.max(0, prev - 10))
+      if (nextItem) setCursorLine(nextItem.originalIndex)
       return
     }
     if (evt.name === "pagedown") {
+      const items = renderableItems()
+      const currentRenderIdx = getRenderIndex(cursorLine())
+      const startIdx = currentRenderIdx === -1 ? 0 : currentRenderIdx
+      const nextRenderIdx = Math.min(items.length - 1, startIdx + 10)
+      const nextItem = items[nextRenderIdx]
+
       previewScroll?.scrollBy(10)
-      setCursorLine((prev) => Math.min(totalLines() - 1, prev + 10))
+      if (nextItem) setCursorLine(nextItem.originalIndex)
       return
     }
   })
 
   // Pre-compute all lines once to avoid repeated splits
   const allLines = createMemo(() => displayContent().split("\n"))
+
+  // Create a flattened list of ONLY the visible items to render
+  // This filters out "meta" and "hunk" lines so the scrollbar represents true content height
+  const renderableItems = createMemo(() => {
+    const lines = allLines()
+    const map = lineInfoMap()
+    const isDiff = isDiffView()
+    const result: { line: string; originalIndex: number; info: { fileLine: number; type: string } }[] = []
+
+    for (let i = 0; i < lines.length; i++) {
+      let info
+      if (isDiff) {
+        info = map.get(i) ?? { fileLine: -1, type: "meta" }
+      } else {
+        info = { fileLine: i + 1, type: "context" }
+      }
+
+      // Filter: hide "meta" and "hunk" lines in diff view
+      if (isDiff && (info.type === "meta" || info.type === "hunk")) {
+        continue
+      }
+
+      result.push({
+        line: lines[i],
+        originalIndex: i,
+        info,
+      })
+    }
+    return result
+  })
+
+  // Maximum lines in a chunk before splitting (for better highlight performance)
+  const MAX_CHUNK_SIZE = 100
+
+  const chunks = createMemo(() => {
+    const items = renderableItems()
+    const result: Chunk[] = []
+    let currentContext: ContextChunk | null = null
+    let currentAdd: AddChunk | null = null
+    let currentRemove: RemoveChunk | null = null
+
+    const flushContext = () => {
+      if (currentContext && currentContext.lines.length > 0) {
+        result.push(currentContext)
+        currentContext = null
+      }
+    }
+
+    const flushAdd = () => {
+      if (currentAdd && currentAdd.lines.length > 0) {
+        result.push(currentAdd)
+        currentAdd = null
+      }
+    }
+
+    const flushRemove = () => {
+      if (currentRemove && currentRemove.lines.length > 0) {
+        result.push(currentRemove)
+        currentRemove = null
+      }
+    }
+
+    const flushAll = () => {
+      flushContext()
+      flushAdd()
+      flushRemove()
+    }
+
+    for (const item of items) {
+      const type = item.info.type
+
+      if (type === "context") {
+        flushAdd()
+        flushRemove()
+
+        if (!currentContext) {
+          currentContext = {
+            type: "context",
+            startIndex: item.originalIndex,
+            lines: [{ line: item.line, fileLine: item.info.fileLine, originalIndex: item.originalIndex }],
+          }
+        } else {
+          currentContext.lines.push({
+            line: item.line,
+            fileLine: item.info.fileLine,
+            originalIndex: item.originalIndex,
+          })
+          if (currentContext.lines.length >= MAX_CHUNK_SIZE) flushContext()
+        }
+      } else if (type === "add") {
+        flushContext()
+        flushRemove()
+
+        if (!currentAdd) {
+          currentAdd = {
+            type: "add",
+            startIndex: item.originalIndex,
+            lines: [{ line: item.line, fileLine: item.info.fileLine, originalIndex: item.originalIndex }],
+          }
+        } else {
+          currentAdd.lines.push({
+            line: item.line,
+            fileLine: item.info.fileLine,
+            originalIndex: item.originalIndex,
+          })
+          if (currentAdd.lines.length >= MAX_CHUNK_SIZE) flushAdd()
+        }
+      } else if (type === "remove") {
+        flushContext()
+        flushAdd()
+
+        if (!currentRemove) {
+          currentRemove = {
+            type: "remove",
+            startIndex: item.originalIndex,
+            lines: [{ line: item.line, originalIndex: item.originalIndex }],
+          }
+        } else {
+          currentRemove.lines.push({ line: item.line, originalIndex: item.originalIndex })
+          if (currentRemove.lines.length >= MAX_CHUNK_SIZE) flushRemove()
+        }
+      }
+      // Note: hunk/meta lines are already filtered out in renderableItems()
+    }
+
+    flushAll()
+    return result
+  })
+
+  // Helper to map original line index to render index (for scrolling)
+  const getRenderIndex = (originalIndex: number) => {
+    return renderableItems().findIndex((item) => item.originalIndex === originalIndex)
+  }
+
+  // Pre-compute cursor and selection render positions
+  const cursorRenderIndex = createMemo(() => getRenderIndex(cursorLine()))
+
+  const selectionRenderRange = createMemo(() => {
+    const start = selectedLineStart()
+    if (start === null) return null
+    const end = selectedLineEnd() ?? start
+    const min = Math.min(start, end)
+    const max = Math.max(start, end)
+
+    // Find render start/end
+    const renderStart = getRenderIndex(min)
+    const renderEnd = getRenderIndex(max)
+
+    if (renderStart === -1 || renderEnd === -1) return null
+
+    return {
+      y: renderStart,
+      height: renderEnd - renderStart + 1,
+    }
+  })
 
   const hunks = createMemo(() => (isDiffView() ? parseHunks(unifiedContent()) : []))
 
@@ -695,13 +919,17 @@ export function SidebarCode(props: {
 
   function jumpToLine(line: number) {
     if (!previewScroll) return
-    previewScroll.scrollTo(line)
-    setCursorLine(line)
+    const renderIdx = getRenderIndex(line)
+    if (renderIdx !== -1) {
+      previewScroll.scrollTo(Math.max(0, renderIdx - 5))
+      setCursorLine(line)
+    }
   }
 
   const markers = createMemo(() => {
     const height = trackHeight()
-    const total = totalLines()
+    // Use renderable items count for marker scaling, not totalLines (which includes hidden)
+    const total = renderableItems().length
     if (height <= 0 || total <= 0) return []
 
     // If content fits in the view, use 1:1 mapping (no scaling)
@@ -712,12 +940,19 @@ export function SidebarCode(props: {
     const hunkList = hunks()
 
     for (const hunk of hunkList) {
-      const position = Math.floor(hunk.line * scale)
+      // Find where this hunk's line appears in the renderable list
+      // hunk.line is 1-based, our indices are 0-based.
+      // But hunk.line refers to "lineNum" in parseHunks, which iterates all lines.
+      // So hunk.line corresponds to originalIndex + 1.
+      const renderIdx = getRenderIndex(hunk.line - 1)
+      if (renderIdx === -1) continue // Should be visible as we show "hunk" type
+
+      const position = Math.floor(renderIdx * scale)
       const last = grouped[grouped.length - 1]
       if (last && last.position === position) {
         if (last.type !== hunk.type) last.type = "mixed"
       } else {
-        grouped.push({ position, type: hunk.type, line: hunk.line })
+        grouped.push({ position, type: hunk.type, line: hunk.line - 1 })
       }
     }
 
@@ -728,9 +963,6 @@ export function SidebarCode(props: {
     const start = selectedLineStart()
     if (start === null) return false
 
-    const info = lineInfoMap().get(line)
-    if (info?.fileLine === -1) return false
-
     const end = selectedLineEnd() ?? start
     const minLine = Math.min(start, end)
     const maxLine = Math.max(start, end)
@@ -739,7 +971,9 @@ export function SidebarCode(props: {
 
   // Handle mouse click on line
   const handleLineClick = (lineIndex: number, shiftKey: boolean) => {
-    if (!focused()) return
+    // Always focus first
+    props.onFocus?.()
+    // Then handle selection
     setCursorLine(lineIndex)
     if (shiftKey && selectedLineStart() !== null) {
       setSelectedLineEnd(lineIndex)
@@ -754,15 +988,6 @@ export function SidebarCode(props: {
     const info = lineInfoMap().get(index)
     if (!info || info.fileLine === -1) return null
     return info.fileLine
-  }
-
-  // Helper to get line info for non-diff view
-  const getLineInfo = (index: number) => {
-    if (isDiffView()) {
-      return lineInfoMap().get(index) ?? { fileLine: -1, type: "header" }
-    }
-    // For non-diff view, line number is just index + 1
-    return { fileLine: index + 1, type: "context" as const }
   }
 
   // Check if file is being actively edited
@@ -898,75 +1123,283 @@ export function SidebarCode(props: {
                 trackOptions: { backgroundColor: theme.backgroundElement, foregroundColor: theme.border },
               }}
             >
-              <For each={allLines()}>
-                {(line, index) => {
-                  const lineNum = index()
-                  const info = createMemo(() => getLineInfo(lineNum))
-                  const isSelected = createMemo(() => isLineSelected(lineNum))
-                  const isCursor = () => isCursorLine(lineNum)
-                  const isMatch = createMemo(() => searchMatchesSet().has(lineNum))
-                  const isCurrentMatch = createMemo(() => isCurrentSearchMatch(lineNum))
+              <box flexDirection="column">
+                <For each={chunks()}>
+                  {(chunk) => (
+                    <Switch>
+                      {/* Consecutive added lines (green) */}
+                      <Match when={chunk.type === "add"}>
+                        {(() => {
+                          const ctx = chunk as AddChunk
+                          const hasHighlights = () => {
+                            for (const item of ctx.lines) {
+                              if (
+                                isLineSelected(item.originalIndex) ||
+                                isCursorLine(item.originalIndex) ||
+                                searchMatchesSet().has(item.originalIndex)
+                              ) {
+                                return true
+                              }
+                            }
+                            return false
+                          }
 
-                  const bg = createMemo(() => {
-                    if (isSelected()) return tint(theme.background, theme.accent, 0.3)
-                    if (isCurrentMatch()) return tint(theme.background, theme.warning, 0.4)
-                    if (isMatch()) return tint(theme.background, theme.warning, 0.15)
-                    if (isCursor() && focused()) return theme.backgroundElement
-                    return undefined
-                  })
-
-                  const fgColor = createMemo(() => {
-                    if (isDiffView()) {
-                      if (info().type === "add") return theme.success
-                      if (info().type === "remove") return theme.error
-                      if (info().type === "header") return theme.textMuted
-                    }
-                    return theme.text
-                  })
-
-                  const shouldShow = createMemo(() => {
-                    if (!isDiffView()) return true
-                    return info().type !== "header"
-                  })
-
-                  return (
-                    <Show when={shouldShow()}>
-                      <box
-                        flexDirection="row"
-                        backgroundColor={bg()}
-                        onMouseUp={() => handleLineClick(lineNum, isShiftDown())}
-                      >
-                        <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
-                          <text
-                            fg={theme.textMuted}
-                            attributes={info().fileLine === -1 ? TextAttributes.DIM : undefined}
-                          >
-                            {info().fileLine > 0 ? info().fileLine.toString() : " "}
-                          </text>
-                        </box>
-                        <Show when={isDiffView()}>
-                          <box width={1} flexShrink={0}>
-                            <text
-                              fg={
-                                info().type === "add"
-                                  ? theme.success
-                                  : info().type === "remove"
-                                    ? theme.error
-                                    : theme.textMuted
+                          return (
+                            <Show
+                              when={hasHighlights()}
+                              fallback={
+                                <box
+                                  flexDirection="row"
+                                  onMouseUp={() => handleLineClick(ctx.startIndex, isShiftDown())}
+                                >
+                                  <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
+                                    <text fg={theme.textMuted}>
+                                      {ctx.lines.map((item) => item.fileLine.toString()).join("\n")}
+                                    </text>
+                                  </box>
+                                  <box width={1} flexShrink={0}>
+                                    <text fg={theme.success}>{ctx.lines.map(() => "+").join("\n")}</text>
+                                  </box>
+                                  <box flexGrow={1} paddingLeft={1}>
+                                    <text fg={theme.success}>
+                                      {ctx.lines
+                                        .map((item) => (item.line.length > 0 ? item.line.slice(1) : ""))
+                                        .join("\n")}
+                                    </text>
+                                  </box>
+                                </box>
                               }
                             >
-                              {info().type === "add" ? "+" : info().type === "remove" ? "-" : " "}
-                            </text>
-                          </box>
-                        </Show>
-                        <box flexGrow={1} paddingLeft={1}>
-                          <text fg={fgColor()}>{isDiffView() && line.length > 0 ? line.slice(1) : line}</text>
-                        </box>
-                      </box>
-                    </Show>
-                  )
-                }}
-              </For>
+                              <For each={ctx.lines}>
+                                {(item) => {
+                                  const isSelected = () => isLineSelected(item.originalIndex)
+                                  const isCursor = () => isCursorLine(item.originalIndex)
+                                  const isMatch = () => searchMatchesSet().has(item.originalIndex)
+                                  const isCurrentMatch = () => isCurrentSearchMatch(item.originalIndex)
+
+                                  const bg = () => {
+                                    if (isSelected()) return tint(theme.background, theme.accent, 0.3)
+                                    if (isCurrentMatch()) return tint(theme.background, theme.warning, 0.4)
+                                    if (isMatch()) return tint(theme.background, theme.warning, 0.15)
+                                    if (isCursor() && focused()) return theme.backgroundElement
+                                    return undefined
+                                  }
+
+                                  return (
+                                    <box
+                                      flexDirection="row"
+                                      backgroundColor={bg()}
+                                      onMouseUp={() => handleLineClick(item.originalIndex, isShiftDown())}
+                                    >
+                                      <box
+                                        width={6}
+                                        paddingLeft={1}
+                                        paddingRight={1}
+                                        alignItems="flex-end"
+                                        flexShrink={0}
+                                      >
+                                        <text fg={theme.textMuted}>{item.fileLine.toString()}</text>
+                                      </box>
+                                      <box width={1} flexShrink={0}>
+                                        <text fg={theme.success}>+</text>
+                                      </box>
+                                      <box flexGrow={1} paddingLeft={1}>
+                                        <text fg={theme.success}>{item.line.length > 0 ? item.line.slice(1) : ""}</text>
+                                      </box>
+                                    </box>
+                                  )
+                                }}
+                              </For>
+                            </Show>
+                          )
+                        })()}
+                      </Match>
+
+                      {/* Consecutive removed lines (red) */}
+                      <Match when={chunk.type === "remove"}>
+                        {(() => {
+                          const ctx = chunk as RemoveChunk
+                          const hasHighlights = () => {
+                            for (const item of ctx.lines) {
+                              if (
+                                isLineSelected(item.originalIndex) ||
+                                isCursorLine(item.originalIndex) ||
+                                searchMatchesSet().has(item.originalIndex)
+                              ) {
+                                return true
+                              }
+                            }
+                            return false
+                          }
+
+                          return (
+                            <Show
+                              when={hasHighlights()}
+                              fallback={
+                                <box
+                                  flexDirection="row"
+                                  onMouseUp={() => handleLineClick(ctx.startIndex, isShiftDown())}
+                                >
+                                  <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
+                                    <text fg={theme.textMuted}>{ctx.lines.map(() => " ").join("\n")}</text>
+                                  </box>
+                                  <box width={1} flexShrink={0}>
+                                    <text fg={theme.error}>{ctx.lines.map(() => "-").join("\n")}</text>
+                                  </box>
+                                  <box flexGrow={1} paddingLeft={1}>
+                                    <text fg={theme.error}>
+                                      {ctx.lines
+                                        .map((item) => (item.line.length > 0 ? item.line.slice(1) : ""))
+                                        .join("\n")}
+                                    </text>
+                                  </box>
+                                </box>
+                              }
+                            >
+                              <For each={ctx.lines}>
+                                {(item) => {
+                                  const isSelected = () => isLineSelected(item.originalIndex)
+                                  const isCursor = () => isCursorLine(item.originalIndex)
+                                  const isMatch = () => searchMatchesSet().has(item.originalIndex)
+                                  const isCurrentMatch = () => isCurrentSearchMatch(item.originalIndex)
+
+                                  const bg = () => {
+                                    if (isSelected()) return tint(theme.background, theme.accent, 0.3)
+                                    if (isCurrentMatch()) return tint(theme.background, theme.warning, 0.4)
+                                    if (isMatch()) return tint(theme.background, theme.warning, 0.15)
+                                    if (isCursor() && focused()) return theme.backgroundElement
+                                    return undefined
+                                  }
+
+                                  return (
+                                    <box
+                                      flexDirection="row"
+                                      backgroundColor={bg()}
+                                      onMouseUp={() => handleLineClick(item.originalIndex, isShiftDown())}
+                                    >
+                                      <box
+                                        width={6}
+                                        paddingLeft={1}
+                                        paddingRight={1}
+                                        alignItems="flex-end"
+                                        flexShrink={0}
+                                      >
+                                        <text fg={theme.textMuted}> </text>
+                                      </box>
+                                      <box width={1} flexShrink={0}>
+                                        <text fg={theme.error}>-</text>
+                                      </box>
+                                      <box flexGrow={1} paddingLeft={1}>
+                                        <text fg={theme.error}>{item.line.length > 0 ? item.line.slice(1) : ""}</text>
+                                      </box>
+                                    </box>
+                                  )
+                                }}
+                              </For>
+                            </Show>
+                          )
+                        })()}
+                      </Match>
+
+                      {/* Unchanged context lines */}
+                      <Match when={chunk.type === "context"}>
+                        {(() => {
+                          const ctx = chunk as ContextChunk
+                          const hasHighlights = () => {
+                            for (const item of ctx.lines) {
+                              if (
+                                isLineSelected(item.originalIndex) ||
+                                isCursorLine(item.originalIndex) ||
+                                searchMatchesSet().has(item.originalIndex)
+                              ) {
+                                return true
+                              }
+                            }
+                            return false
+                          }
+
+                          return (
+                            <Show
+                              when={hasHighlights()}
+                              fallback={
+                                <box
+                                  flexDirection="row"
+                                  onMouseUp={() => handleLineClick(ctx.startIndex, isShiftDown())}
+                                >
+                                  <box width={6} paddingLeft={1} paddingRight={1} alignItems="flex-end" flexShrink={0}>
+                                    <text fg={theme.textMuted}>
+                                      {ctx.lines.map((item) => item.fileLine.toString()).join("\n")}
+                                    </text>
+                                  </box>
+                                  <Show when={isDiffView()}>
+                                    <box width={1} flexShrink={0}>
+                                      <text fg={theme.textMuted}>{ctx.lines.map(() => " ").join("\n")}</text>
+                                    </box>
+                                  </Show>
+                                  <box flexGrow={1} paddingLeft={1}>
+                                    <text fg={theme.text}>
+                                      {ctx.lines
+                                        .map((item) =>
+                                          isDiffView() && item.line.length > 0 ? item.line.slice(1) : item.line,
+                                        )
+                                        .join("\n")}
+                                    </text>
+                                  </box>
+                                </box>
+                              }
+                            >
+                              <For each={ctx.lines}>
+                                {(item) => {
+                                  const isSelected = () => isLineSelected(item.originalIndex)
+                                  const isCursor = () => isCursorLine(item.originalIndex)
+                                  const isMatch = () => searchMatchesSet().has(item.originalIndex)
+                                  const isCurrentMatch = () => isCurrentSearchMatch(item.originalIndex)
+
+                                  const bg = () => {
+                                    if (isSelected()) return tint(theme.background, theme.accent, 0.3)
+                                    if (isCurrentMatch()) return tint(theme.background, theme.warning, 0.4)
+                                    if (isMatch()) return tint(theme.background, theme.warning, 0.15)
+                                    if (isCursor() && focused()) return theme.backgroundElement
+                                    return undefined
+                                  }
+
+                                  return (
+                                    <box
+                                      flexDirection="row"
+                                      backgroundColor={bg()}
+                                      onMouseUp={() => handleLineClick(item.originalIndex, isShiftDown())}
+                                    >
+                                      <box
+                                        width={6}
+                                        paddingLeft={1}
+                                        paddingRight={1}
+                                        alignItems="flex-end"
+                                        flexShrink={0}
+                                      >
+                                        <text fg={theme.textMuted}>{item.fileLine.toString()}</text>
+                                      </box>
+                                      <Show when={isDiffView()}>
+                                        <box width={1} flexShrink={0}>
+                                          <text fg={theme.textMuted}> </text>
+                                        </box>
+                                      </Show>
+                                      <box flexGrow={1} paddingLeft={1}>
+                                        <text fg={theme.text}>
+                                          {isDiffView() && item.line.length > 0 ? item.line.slice(1) : item.line}
+                                        </text>
+                                      </box>
+                                    </box>
+                                  )
+                                }}
+                              </For>
+                            </Show>
+                          )
+                        })()}
+                      </Match>
+                    </Switch>
+                  )}
+                </For>
+              </box>
             </scrollbox>
 
             {/* Change indicators strip (only in diff view) */}

@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
 import { Portal, useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useKeybind } from "../../context/keybind"
@@ -137,6 +137,16 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
   })
 
   const { theme } = useTheme()
+
+  // Auto-approve edit permissions when auto-accept mode is enabled
+  createEffect(() => {
+    if (sync.data.autoAcceptEdits && props.request.permission === "edit") {
+      sdk.client.permission.reply({
+        reply: "once",
+        requestID: props.request.id,
+      })
+    }
+  })
 
   return (
     <Switch>
@@ -373,6 +383,7 @@ function Prompt<const T extends Record<string, string>>(props: {
   const { theme } = useTheme()
   const keybind = useKeybind()
   const dimensions = useTerminalDimensions()
+  const sync = useSync()
   const keys = Object.keys(props.options) as (keyof T)[]
   const [store, setStore] = createStore({
     selected: keys[0],
@@ -381,6 +392,13 @@ function Prompt<const T extends Record<string, string>>(props: {
   const diffKey = Keybind.parse("ctrl+f")[0]
 
   useKeyboard((evt) => {
+    if (evt.name === "h" && evt.ctrl) {
+      evt.preventDefault()
+      evt.stopPropagation()
+      sync.set("autoAcceptEdits", (prev) => !prev)
+      return
+    }
+
     if (evt.name === "left" || evt.name == "h") {
       evt.preventDefault()
       const idx = keys.indexOf(store.selected)
@@ -392,6 +410,13 @@ function Prompt<const T extends Record<string, string>>(props: {
       evt.preventDefault()
       const idx = keys.indexOf(store.selected)
       const next = keys[(idx + 1) % keys.length]
+      setStore("selected", next)
+    }
+
+    if (evt.name === "tab") {
+      evt.preventDefault()
+      const idx = keys.indexOf(store.selected)
+      const next = keys[evt.shift ? (idx - 1 + keys.length) % keys.length : (idx + 1) % keys.length]
       setStore("selected", next)
     }
 

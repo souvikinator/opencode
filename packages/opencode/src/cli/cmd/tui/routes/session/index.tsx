@@ -149,6 +149,7 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode, setDiffWrapMode] = createSignal<"word" | "none">("word")
   const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
+  const [sidebarWidthOffset, setSidebarWidthOffset] = kv.signal<number>("sidebar_width_offset", 0)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -158,7 +159,10 @@ export function Session() {
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const sidebarWidth = createMemo(() => (sidebarMode() === "code" || sidebarMode() === "terminal" ? 85 : 42))
+  const sidebarWidth = createMemo(() => {
+    const base = sidebarMode() === "code" || sidebarMode() === "terminal" ? 85 : 42
+    return Math.max(20, base + (sidebarWidthOffset() || 0))
+  })
   const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? sidebarWidth() : 0) - 4)
 
   const scrollAcceleration = createMemo(() => {
@@ -237,9 +241,33 @@ export function Session() {
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
   useKeyboard((evt) => {
+    // Toggle auto-accept edits mode with Ctrl+H
+    if (evt.name === "h" && evt.ctrl) {
+      evt.preventDefault()
+      evt.stopPropagation()
+      sync.set("autoAcceptEdits", (prev) => !prev)
+      const newMode = !sync.data.autoAcceptEdits
+      toast.show({
+        message: newMode ? "Auto-accept edits enabled" : "Auto-accept edits disabled",
+        variant: "info",
+        duration: 2000,
+      })
+      return
+    }
+
     if (keybind.match("sidebar_focus", evt)) {
       if (!sidebarVisible()) return
       setFocusPane((prev) => (prev === "chat" ? "sidebar" : "chat"))
+      return
+    }
+
+    if (keybind.match("sidebar_width_increase" as any, evt)) {
+      setSidebarWidthOffset((prev) => ((prev as number) || 0) + 5)
+      return
+    }
+
+    if (keybind.match("sidebar_width_decrease" as any, evt)) {
+      setSidebarWidthOffset((prev) => ((prev as number) || 0) - 5)
       return
     }
 

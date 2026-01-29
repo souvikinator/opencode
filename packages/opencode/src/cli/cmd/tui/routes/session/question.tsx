@@ -2,6 +2,7 @@ import { createStore } from "solid-js/store"
 import { createMemo, For, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
+import { useSync } from "../../context/sync"
 import { useKeybind } from "../../context/keybind"
 import { tint, useTheme } from "../../context/theme"
 import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
@@ -120,10 +121,19 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
   }
 
   const dialog = useDialog()
+  const sync = useSync()
 
   useKeyboard((evt) => {
     // Skip processing if a dialog (e.g., command palette) is open
     if (dialog.stack.length > 0) return
+
+    // Toggle edit permission mode with Ctrl+H
+    if (evt.name === "h" && evt.ctrl) {
+      evt.preventDefault()
+      evt.stopPropagation()
+      sync.set("autoAcceptEdits", (prev) => !prev)
+      return
+    }
 
     // When editing custom answer textarea
     if (store.editing && !confirm()) {
@@ -200,8 +210,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
 
     if (evt.name === "tab") {
       evt.preventDefault()
-      const direction = evt.shift ? -1 : 1
-      selectTab((store.tab + direction + tabs()) % tabs())
+      selectTab(evt.shift ? (store.tab - 1 + tabs()) % tabs() : (store.tab + 1) % tabs())
     }
 
     if (confirm()) {
